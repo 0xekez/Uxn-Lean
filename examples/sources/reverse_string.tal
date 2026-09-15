@@ -1,0 +1,25 @@
+( Reverse a string and print it )
+
+	str/flip
+	str/<print>
+	BRK
+
+@str/flip ( -- str* )
+	[ LIT2r =&buf ] DUP2kr
+	( sentinel ) #ff
+	&>get
+		LDAkr STHr DUP ?{
+			POP POP2r
+			&>put
+				INCk ?{ POP POP2r STH2r JMP2r }
+				STH2kr STA
+				INC2r !/>put }
+		INC2r !/>get
+		
+@str/<print> ( str* -- )
+	LDAk DUP ?{ POP POP2 JMP2r }
+	#18 DEO
+	INC2 !/<print>
+
+@str/buf "wonderland 00
+

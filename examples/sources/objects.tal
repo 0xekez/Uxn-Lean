@@ -1,0 +1,34 @@
+( Uxntal objects are statically allocated data-structures
+  with methods accessible via sublabels. )
+
+@on-reset ( -> )
+  ;dict/a obj/set
+  ;dict/b obj/join
+  obj/emit
+  BRK
+
+@obj/set ( -- )
+  ;&buf ,&ptr STR2
+  ( >> )
+
+@obj/join ( str* -- )
+  &>w
+    LDAk DUP ?{ POP POP2 JMP2r }
+    /push INC2 !&>w
+
+@obj/emit ( -- )
+  ,&ptr LDR2 ;&buf
+  &>l
+    NEQ2k ?{ POP2 POP2 JMP2r }
+    LDAk #18 DEO INC2 !&>l
+
+@obj/push ( c -- )
+  #00 [ LIT2 &ptr =&buf ]
+  DUP2 ;&cap NEQ2 ?{ ( handle overflow ) }
+  INC2k ,&ptr STR2
+	STA2 JMP2r
+
+@dict/a "foo $1
+  &b "bar $1
+
+@obj/buf $40 &cap

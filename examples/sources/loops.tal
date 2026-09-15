@@ -1,0 +1,16 @@
+( Basic loops are done by pushing a limit and an iterator
+  and comparing the bounds against the iterator each cycle )
+
+#08                  ( Push limit )
+#00                  ( Push iterator )
+@loop
+  DUP num/<print>    ( Run function to print number )
+  INC GTHk ?loop     ( Loop while limit is larger than iterator )
+POP2                 ( Pop limit and iterator )
+BRK                  ( Halt. )
+
+@num/<print> ( int -- )
+  LIT "0 ADD         ( Add number to ascii character 0 )
+  #18 DEO            ( Send to Console/write )
+  JMP2r
+

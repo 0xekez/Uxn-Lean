@@ -1,0 +1,24 @@
+( 54K . Fizzbuzz
+| Fizz when divisible by 3
+| Buzz when divisible by 5
+| FizzBuzz when divisible by 15
+| Otherwise, a number )
+
+#6501
+
+@fizzbuzz ( n i -- )
+	#00 OVR #03 DIVk MUL SUB ?{
+		INC LIT2 "F 18 DEO
+		LIT2 "i 18 DEO
+		LIT2 "z 18 DEOk DEO }
+	OVR #05 DIVk MUL SUB ?{
+		INC LIT2 "B 18 DEO
+		LIT2 "u 18 DEO
+		LIT2 "z 18 DEOk DEO }
+	?{
+		DUP #0a DIVk DUP #30 ADD #18 DEO
+		MUL SUB #30 ADD #18 DEO }
+	#0a18 DEO
+	INC GTHk ?fizzbuzz
+	POP2 BRK
+

@@ -1,0 +1,12 @@
+( File/read example from https://wiki.xxiivv.com/site/varvara.html#file
+  Devine Lu Linvega. The runner inspects the destination in RAM. )
+
+|a0 @File/vector $2 &success $2 &stat $2 &delete $1 &append $1 &name $2 &length $2 &read $2 &write $2
+|100
+@on-reset ( -> )
+	;filename .File/name DEO2
+	#0010 .File/length DEO2
+	;buffer .File/read DEO2
+	BRK
+@filename "in.txt $1
+@buffer $10

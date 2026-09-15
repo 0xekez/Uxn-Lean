@@ -1,0 +1,15 @@
+( The Uxn virtual machine has a working stack of 256 bytes.
+  A byte is a value between the hexadecimal numbers 00 and ff. )
+
+#0a          ( Push 0a byte to the stack )
+#0b          ( Push 0b byte to the stack )
+SWP          ( Swap them, so 0a is on top )
+NIP POP      ( Nip the 0b byte, pop the 0a byte )
+
+( Postfix arithmetic has no precedence rules,
+  operations are simply applied in the order they are called. )
+
+#02 #10 ADD  ( 02 + 10 = 12 )
+#04 #08 SUB  ( 04 - 08 = fc )
+#08 #04 MUL  ( 08 * 04 = 20 )
+#10 #02 DIV  ( 10 / 02 = 08 )

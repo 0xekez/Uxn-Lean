@@ -1,0 +1,70 @@
+a|b|c
+-+-+-
+d|e|f
+-+-+-
+g|h|i
+
+O playing: 
+O|b|c
+-+-+-
+d|e|f
+-+-+-
+g|h|i
+
+X playing: 
+O|X|c
+-+-+-
+d|e|f
+-+-+-
+g|h|i
+
+O playing: 
+O|X|O
+-+-+-
+d|e|f
+-+-+-
+g|h|i
+
+X playing: 
+O|X|O
+-+-+-
+d|X|f
+-+-+-
+g|h|i
+
+O playing: 
+O|X|O
+-+-+-
+O|X|f
+-+-+-
+g|h|i
+
+X playing: 
+O|X|O
+-+-+-
+O|X|X
+-+-+-
+g|h|i
+
+O playing: 
+O|X|O
+-+-+-
+O|X|X
+-+-+-
+g|O|i
+
+X playing: 
+O|X|O
+-+-+-
+O|X|X
+-+-+-
+X|O|i
+
+O playing: 
+O|X|O
+-+-+-
+O|X|X
+-+-+-
+X|O|O
+
+Draw.

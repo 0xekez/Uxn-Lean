@@ -1,0 +1,18 @@
+( Fibonacci Short, adapted from Devine Lu Linvega's example.
+  Reads one raw stdin byte n and leaves fib n as a working-stack short.
+  The result is exact for n <= 24. No console output. )
+
+|0100
+;on-input #10 DEO2 BRK
+
+@on-input
+	( Ignore argument and end events, including the final callback after halt. )
+	#17 DEI #01 NEQ ?&done
+	#12 DEI #00 SWP u16/fib
+	#80 #0f DEO
+	&done BRK
+
+@u16/fib ( num* -- numfib* )
+	#0001 GTH2k ?{ POP2 JMP2r }
+	SUB2k /fib STH2
+	INC2 SUB2 /fib STH2r ADD2 JMP2r

@@ -1,0 +1,17 @@
+( A literal is a number to be pushed to the stack,
+  Uxntal supports various ways of creating literal bytes. )
+
+    80 12  ( A number will be interpreted as an opcode )
+   LIT 12  ( 80 is the numerical value of the LIT opcode )
+      #12  ( This is a shorthand for a literal byte )
+
+( A literal short is a literal number made of two bytes. )
+
+  a0 1234  ( A number will be interpreted as an opcode )
+LIT2 1234  ( a0 is the numerical value of the LIT2 opcode )
+    #1234  ( This is the shorthand for a literal short )
+
+( ASCII characters can also be made into literal bytes. )
+
+LIT "H #18 DEO  ( Push the letter H, send to Console/write )
+LIT2 "i 18 DEO  ( Push the letter i, send to Console/write )

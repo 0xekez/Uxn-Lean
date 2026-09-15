@@ -1,0 +1,9 @@
+/.lake
+/differential-failures/
+/tests/failures/
+__pycache__/
+
+# Emacs backups, autosaves, and lock files.
+*~
+\#*#
+.#*

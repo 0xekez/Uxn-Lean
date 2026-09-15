@@ -1,0 +1,15 @@
+( Immediate conditional jumps in Uxntal is done
+  by checking if the top of the stack is not zero. )
+
+#80           ( Push a value on stack )
+#01 ?{ INC }  ( 80 )
+#00 ?{ INC }  ( 81 )
+
+( Each logic opcode EQU, NEQ, GTH, LTH will push
+  a non-zero byte when true. There are many ways
+  to do a conditional jump: )
+
+#08 #04 EQU ?label INC @label  ( 81 )
+#08 #04 NEQ ?&a INC &a         ( 82 )
+#08 #04 GTH ?{ INC }           ( 83 )
+#08 #04 LTH ,&b JCN INC &b     ( 83 )

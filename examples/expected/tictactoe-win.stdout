@@ -1,0 +1,42 @@
+a|b|c
+-+-+-
+d|e|f
+-+-+-
+g|h|i
+
+O playing: 
+O|b|c
+-+-+-
+d|e|f
+-+-+-
+g|h|i
+
+X playing: 
+O|b|c
+-+-+-
+X|e|f
+-+-+-
+g|h|i
+
+O playing: 
+O|O|c
+-+-+-
+X|e|f
+-+-+-
+g|h|i
+
+X playing: 
+O|O|c
+-+-+-
+X|X|f
+-+-+-
+g|h|i
+
+O playing: 
+O|O|O
+-+-+-
+X|X|f
+-+-+-
+g|h|i
+
+O won.

@@ -1,0 +1,15 @@
+( Function labels are followed by a comment that explains
+  the expected transformation, in the format: before -- after )
+
+#12 double  ( Apply the "double" function on the number 12 )
+;promote    ( Push a pointer to the "promote" function )
+JSR2        ( Call the pointer to apply the "promote" function )
+BRK         ( Halt program with a BRK )
+
+@promote ( byte -- short* )
+  #00 SWP   ( Body of the function )
+  JMP2r     ( Return by jumping to address in return stack )
+
+@double ( value -- res )
+  DUP ADD
+  JMP2r

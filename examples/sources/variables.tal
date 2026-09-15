@@ -1,0 +1,15 @@
+( The program location can be moved to create labels of different values,
+  but must always be returned to 100, which is where all Uxn programs begin. )
+
+|000               ( Move program location to Zero-page )
+
+    @zep8 $1       ( Allocate a byte of space )
+    @zep16 $2      ( Allocate a short of space )
+
+|100               ( Move program location to Reset )
+
+#12 .zep8 STZ      ( Set "zep8" to 12 )
+.zep8 LDZ          ( Get byte in zero-page variable "zep8" )
+
+#3456 .zep16 STZ2  ( Set zero-page variable "zep16" to 3456 )
+.zep16 LDZ2        ( Get short in zero-page variable "zep16" )

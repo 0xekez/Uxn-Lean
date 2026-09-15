@@ -1,0 +1,17 @@
+( Read-only wrapper around has-meta from
+  https://wiki.xxiivv.com/site/metadata.html
+  Devine Lu Linvega. The result is one raw boolean byte on stdout. )
+
+|a0 @File/vector $2 &success $2 &stat $2 &delete $1 &append $1 &name $2 &length $2 &read $2 &write $2
+|100
+;filename has-meta #18 DEO #800f DEO BRK
+@filename "meta.rom $1
+
+@has-meta ( filename* -- bool )
+	.File/name DEO2
+	#0003 .File/length DEO2
+	;&b .File/read DEO2k DEO2
+	#8006 ,&litport LDR2 EQU2
+	#37 ,&deo2 LDR EQU AND
+	JMP2r
+	&b &litport $2 &deo2 $1

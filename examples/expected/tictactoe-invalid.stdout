@@ -1,0 +1,22 @@
+a|b|c
+-+-+-
+d|e|f
+-+-+-
+g|h|i
+
+O playing: 
+O|b|c
+-+-+-
+d|e|f
+-+-+-
+g|h|i
+
+X playing: 
+Position taken.
+O|b|c
+-+-+-
+X|e|f
+-+-+-
+g|h|i
+
+O playing: 
