@@ -2,7 +2,7 @@ import Uxn.Uxn
 
 namespace Uxn.Host.Port
 
--- Named byte addresses. match_pattern also permits their use in dispatch patterns.
+-- Named byte addresses per the Varvara spec.
 
 namespace System
 @[match_pattern] def state : Byte := 0x0f
@@ -18,6 +18,9 @@ namespace Console
 end Console
 
 namespace File
+/-- The port range occupied by the two Varvara File devices. -/
+def ports : Set Byte := { port | 0xa0 ≤ port ∧ port < 0xc0 }
+
 @[match_pattern] def success : Byte := 0xa2
 @[match_pattern] def name : Byte := 0xa8
 @[match_pattern] def nameLow : Byte := name + 1

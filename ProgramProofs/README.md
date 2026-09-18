@@ -1,4 +1,4 @@
-Proofs of IO action equalities for ROMs from `../examples`.
+Correctness proofs for ROMs from `../examples`.
 
 From `uxn-lean/`, run:
 

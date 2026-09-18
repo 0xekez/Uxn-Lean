@@ -33,11 +33,12 @@ def State.readWord (s : State) (port : Byte) : Word :=
 def State.writeWord (s : State) (port : Byte) (value : Word) : State :=
   (s.write port ((value >>> 8).setWidth 8)).write (port + 1) (value.setWidth 8)
 
+/-- Load a ROM and prepare its reset entry for evaluation. -/
 def initialState (rom : ByteArray) : State :=
   let (memSize, romStart) := (0x10000, 0x100)
   let ram := rom.copySlice 0 ⟨Array.replicate memSize 0⟩ romStart (memSize - romStart)
   { vm :=
-      { pc := 0
+      { pc := BitVec.ofNat 16 romStart
         mem :=
           { ram := fun address => ram[address.toNat]!.toBitVec
             wstk := { data := fun _ => 0, ptr := 0 }
@@ -65,6 +66,9 @@ private def readFile (mem : Memory) : StateT State IO Patch := do
     modify fun s => { s with file := { file with handle := some handle } }
     let address := (← get).readWord Port.File.read
     let bytes ← handle.read (min file.length.toNat (0x10000 - address.toNat)).toUSize
+    -- Like uxn2, release the handle on a positive-length EOF read so the next read reopens it.
+    if file.length != 0 && bytes.isEmpty then
+      modify fun s => { s with file.handle := none }
     modify (·.writeWord Port.File.success (BitVec.ofNat 16 bytes.size))
     return { ramWrites := bytes.data.toList.zipIdx |>.map fun (byte, i) =>
       (address + BitVec.ofNat 16 i, byte.toBitVec) }
@@ -92,6 +96,11 @@ def respond (mem : Memory) (request : Request) : StateT State IO (Reply request)
     modify (·.write port high)
     return { reply := (), patch := ← deo mem (port + 1) low }
 
+def step (vm : Uxn.State) : StateT State IO Outcome :=
+  match Uxn.step vm with
+  | .done outcome => pure outcome
+  | .request request vm resume => resume <$> respond vm.mem request
+
 def evalLoop : Outcome → StateT State IO Unit
   | .brk vm => modify fun s => { s with vm }
   | .next vm => do
@@ -99,10 +108,7 @@ def evalLoop : Outcome → StateT State IO Unit
       modify fun s => { s with vm }
     else
       modify fun s => { s with fuel := s.fuel.map Nat.pred }
-      match Uxn.step vm with
-      | .done outcome => evalLoop outcome
-      | .request request vm resume =>
-        evalLoop (resume (← respond vm.mem request))
+      evalLoop (← step vm)
 partial_fixpoint
 
 def eval (pc : Word) : StateT State IO Unit := do
@@ -140,7 +146,7 @@ def run (rom : ByteArray) (args : List String := [])
     (fuel : Option Nat := none) : IO (UInt32 × State) :=
   StateT.run (s := initialState rom) do
     modify fun s => { s.write Port.Console.type (if args.isEmpty then 0 else 1) with fuel }
-    eval 0x100
+    evalLoop (.next (← get).vm)
     if (← get).fuel != some 0 && (← get).consoleVector != 0 then
       run.consoleArgs args
       run.readConsole

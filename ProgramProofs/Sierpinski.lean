@@ -372,7 +372,7 @@ theorem correct (k : Nat) (hk : k < 8) :
 
     let ram := (initialState (rom h)).vm.mem.ram
     have hc : Code (rom h) 52 ram := Code.initial (rom h) 52 (by change 52 ≤ (rom h).data.size; simp [rom]) (by decide)
-    let host : Uxn.Host.State := { vm := machine ram 0 Stack.empty Stack.empty }
+    let host : Uxn.Host.State := { vm := machine ram 0x100 Stack.empty Stack.empty }
     obtain ⟨w, r, hboot, hw, hr⟩ := boot_step h ram hc host rfl
     have hsub : BitVec.ofNat 8 h - 1 = BitVec.ofNat 8 (h - 1) := by bv_omega
     rw [hsub] at hw

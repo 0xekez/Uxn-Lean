@@ -1,5 +1,5 @@
 -- Live-stack contracts used by the recursive Fibonacci proof.
-import ProgramProofs.Host.Host
+import ProgramProofs.Host.Execution
 
 set_option linter.unusedSimpArgs false
 set_option maxHeartbeats 1000000
@@ -87,27 +87,6 @@ theorem Holds.peekWord {s : Uxn.Stack} {xs : List Byte} {x : Word}
 end Stack
 
 attribute [local uxn_step] Stack.pop Stack.peek Stack.popWord Stack.peekWord
-
--- A proof-only finite execution relation over the existing VM step function.
-inductive Reaches : Uxn.State → Uxn.State → Prop where
-  | refl (s) : Reaches s s
-  | next {s t u} : Uxn.step s = .done (.next t) → Reaches t u → Reaches s u
-
-theorem Reaches.trans {s t u} (h : Reaches s t) (k : Reaches t u) :
-    Reaches s u := by
-  induction h with
-  | refl => exact k
-  | next hs _ ih => exact .next hs (ih k)
-
-/-- Device-free finite execution preserves the unbounded host loop. -/
-theorem Reaches.evalLoop {s t : Uxn.State} (h : Reaches s t)
-    (host : Uxn.Host.State) (hf : host.fuel = none) :
-    evalLoop (.next s) host = evalLoop (.next t) host := by
-  induction h with
-  | refl => rfl
-  | next hs _ ih =>
-    rw [evalLoop_next _ host hf, hs]
-    exact ih
 
 /-- Reduce a VM instruction using its byte hypotheses and the shared execution rules. -/
 local macro "reduce_step" : tactic => `(tactic| (

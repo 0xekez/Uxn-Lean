@@ -8,3 +8,5 @@
   irrespective of what we we have. Implement that.
 - Never use native_decide in proofs. Our proofs should not rely on the
   correctness of Lean's native evaluator.
+- Please do not edit or create README files unless asked.
+

@@ -25,9 +25,8 @@ theorem evalLoop_next (vm : Uxn.State) (host : Uxn.Host.State)
   rcases host with ⟨hostVM, ports, vector, fuel, file⟩
   cases hfuel
   rw [evalLoop.eq_def]
-  simp [MonadStateOf.get, MonadStateOf.modifyGet, modifyGet, StateT.bind,
-    StateT.get, modify, get, getThe, Bind.bind]
-  rfl
+  simp only [uxn_state]
+  cases h : Uxn.step vm <;> simp [Uxn.Host.step, h, uxn_state]
 
 /-- Symbolically execute exactly `count` host instructions on the left of an
 execution equation. Code and invariant facts are supplied by the caller; each
@@ -53,8 +52,8 @@ theorem run_of_evalLoop (rom : ByteArray) (final : Uxn.Host.State)
     Uxn.Host.run rom = (do output; pure (0, final)) := by
   unfold Uxn.Host.run
   rw [← initial_shape rom] at hrun ⊢
-  simp [uxn_state] at hrun
+  simp [uxn_state, machine] at hrun
   simp at hv hh
-  simp [eval, uxn_state, Uxn.Host.State.write, hrun, hv, hh, Port.System.state, bind_assoc]
+  simp [machine, uxn_state, Uxn.Host.State.write, hrun, hv, hh, Port.System.state]
 
 end ProgramProofs.Host

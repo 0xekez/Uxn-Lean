@@ -47,8 +47,14 @@ private def fileTests : StateT Uxn.Host.State IO Unit := do
   request (.write8 Port.File.read 0x60)
   check ((← get).readWord Port.File.success == 3) "high-byte-only read write must not trigger a read"
   expect (← read 9) "f".toUTF8 "short final read"
-  expect (← read 2) .empty "EOF"
-  expect (← read 2) .empty "EOF must not reopen"
+  expect (← read 0) .empty "zero-length read at EOF"
+  put 0x4000 "sentinel".toUTF8
+  expect (← read 2) .empty "EOF after zero-length read"
+  expect (ramBytes (← get).vm.mem 0x4000 8) "sentinel".toUTF8 "EOF changed RAM"
+  expect (← read 2) "ab".toUTF8 "read after EOF reopens"
+  expect (← read 4) "cdef".toUTF8 "reopened cursor"
+  expect (← read 1) .empty "EOF after exact-length read"
+  expect (← read 1) "a".toUTF8 "read after exact-length EOF reopens"
   word Port.File.length 2
   word Port.File.name 0x2000
   request (.write8 Port.File.length 1)
@@ -75,6 +81,9 @@ private def fileTests : StateT Uxn.Host.State IO Unit := do
   expect (← read 1) "X".toUTF8 "filename memory is read at open"
   put 0x2000 ("a".toUTF8.push 0)
   expect (← read 1) "Y".toUTF8 "open handle ignores later filename edits"
+  expect (← read 2) "Z".toUTF8 "short read keeps handle until EOF"
+  expect (← read 1) .empty "EOF with edited filename"
+  expect (← read 2) "ab".toUTF8 "reopen reads current filename memory"
   select "missing"
   put 0x4000 "sentinel".toUTF8
   expect (← read 8) .empty "missing file"
@@ -83,6 +92,9 @@ private def fileTests : StateT Uxn.Host.State IO Unit := do
   expect (← read 3) "now".toUTF8 "failed opens may be retried"
   select "empty"
   expect (← read 1) .empty "empty file"
+  expect (← read 1) .empty "reopened empty file"
+  put 0x2000 ("b".toUTF8.push 0)
+  expect (← read 1) "X".toUTF8 "empty file EOF releases handle"
   select "binary"
   expect (← read 5) ⟨#[0, 255, 128, 10, 13]⟩ "binary file bytes"
   select "a"
@@ -138,17 +150,21 @@ private def directoryTests : StateT Uxn.Host.State IO Unit := do
       if next.isEmpty then break
       actual := actual ++ next
     expect actual listing s!"directory chunk size {chunk}"
-    expect (← read 10) .empty "directory EOF must not reopen"
+    expect (← read 10) (listing.extract 0 10) "read after directory EOF reopens"
   select "listing"
   expect (← read 0) .empty "zero directory read"
   expect (← read 5) (listing.extract 0 5) "zero directory read consumed bytes"
   IO.FS.writeFile "listing/new" "!"
   expect (← read 0xffff) (listing.extract 5 listing.size) "directory snapshot changed while open"
-  select "listing"
+  expect (← read 0) .empty "zero-length directory read at EOF"
+  expect (← read 1) .empty "directory EOF after zero-length read"
   let refreshed ← read 0xffff
-  check ((String.fromUTF8! refreshed).contains "0001\tnew\n") "reset did not refresh directory"
+  check ((String.fromUTF8! refreshed).contains "0001\tnew\n") "EOF did not refresh directory"
   select "empty-dir"
   expect (← read 1) .empty "empty directory"
+  expect (← read 1) .empty "reopened empty directory"
+  put 0x2000 ("a".toUTF8.push 0)
+  expect (← read 1) "a".toUTF8 "empty directory EOF releases handle"
   select "listing"
   expect (← read 1 0xffff) (refreshed.extract 0 1) "directory RAM-end clamp"
   expect (← read 1) (refreshed.extract 1 2) "directory clamp consumed excess bytes"

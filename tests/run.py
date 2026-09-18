@@ -19,6 +19,7 @@ import time
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parent
 EXAMPLES = ROOT / "examples"
+SELFHOST = ROOT / "ProgramProofs/Uxnmin"
 WORKER = ROOT / ".lake/build/bin/test-worker"
 MASK = (1 << 64) - 1
 GAMMA = 0x9e3779b97f4a7c15
@@ -160,6 +161,12 @@ def corpus(reference, manifest, cases, timeout):
     for program in manifest["programs"]:
         same(assemble(reference, (EXAMPLES / program["source"]).read_bytes()),
              (EXAMPLES / program["rom"]).read_bytes(), "rebuild " + program["name"])
+    provenance = json.loads((SELFHOST / "provenance.json").read_text())
+    for name, suffix in [("source", "tal"), ("rom", "rom")]:
+        same(hashlib.sha256((SELFHOST / f"uxnmin.{suffix}").read_bytes()).hexdigest(),
+             provenance[name + "_sha256"], "self-hosted " + name + " hash")
+    same(assemble(reference, (SELFHOST / "uxnmin.tal").read_bytes()),
+         (SELFHOST / "uxnmin.rom").read_bytes(), "rebuild self-hosted uxnmin")
     # Complete C runs retain every golden check even when a Lean snapshot needs a lower budget.
     with tempfile.TemporaryDirectory(prefix="uxn-corpus-") as temp:
         rom = Path(temp) / "program.rom"
@@ -168,7 +175,8 @@ def corpus(reference, manifest, cases, timeout):
             result = process([reference, rom, *case.args], case.data, temp, timeout)
             same(result.problem, "", case.name)
             golden(result, case.expected, case.name)
-    print(f"PASS corpus: {len(manifest['programs'])} ROM rebuilds, {len(cases)} expected outputs", flush=True)
+    print(f"PASS corpus: {len(manifest['programs'])} example ROM rebuilds + self-hosted ROM, "
+          f"{len(cases)} expected outputs", flush=True)
 
 
 def golden(result, expected, label):
@@ -316,13 +324,97 @@ def file_examples(base, reference, timeout):
     print("PASS File ROMs: four upstream tests, specification read, two metadata cases", flush=True)
 
 
+def nested_interpreter(directory, reference):
+    binary, labels = symbols(reference, (SELFHOST / "uxnmin.tal").read_bytes(),
+                             ["rom/mem", "wst/buf", "rst/buf", "pc/addr", "vm/on-console"])
+    interpreter = directory / "uxnmin.rom"
+    interpreter.write_bytes(binary)
+    return interpreter, labels
+
+
+def same_guest(direct, nested, labels, name):
+    golden(nested, (direct.code, direct.stdout, direct.stderr), name)
+    direct, nested = fields(direct.state), fields(nested.state)
+    memory = nested["ram"]
+    same(memory[labels["pc/addr"]:labels["pc/addr"] + 2], direct["pc"], name + " guest PC")
+    for stack, pointer, symbol in [("wstack", "wptr", "wst/buf"), ("rstack", "rptr", "rst/buf")]:
+        address = labels[symbol]
+        same(memory[address:address + 257], direct[stack] + direct[pointer], name + " " + stack)
+    # The nested interpreter's own code/stacks occupy the remainder of host RAM.
+    address = labels["rom/mem"]
+    same(memory[address:], direct["ram"][:65536 - address], name + " guest RAM")
+
+
+def nested_console(base, reference, timeout):
+    directory = base / "console"
+    directory.mkdir()
+    interpreter, labels = nested_interpreter(directory, reference)
+    echo = "@on-console #12 DEI #18 DEO BRK"
+    clear = "@on-console #12 DEI #18 DEO #0000 #10 DEO2 BRK"
+    # Inactive guests must return with the pipe still open, leaving its bytes unread.
+    # Active guests must retain argument/input/EOF delivery, including after vector clearing.
+    cases = [
+        ("brk", "BRK", (), False, False, 0, b""),
+        ("brk-eof", "BRK", (), False, True, 0, b""),
+        ("brk-arguments", "BRK", ("A", "B"), False, False, 0, b""),
+        ("output-brk", "#5118 DEO BRK", (), False, False, 0, b"Q"),
+        ("zero-vector", "#0000 #10 DEO2 BRK", (), False, False, 0, b""),
+        ("clear-before-brk", ";on-console #10 DEO2 #0000 #10 DEO2 BRK " + echo,
+         (), False, False, 0, b""),
+        ("unlatched-vector", "#01 #10 DEO BRK", (), False, False, 0, b""),
+        ("exit-code", "#830f DEO BRK", (), False, False, 3, b""),
+        ("echo", ";on-console #10 DEO2 BRK " + echo, (), True, True, 0, b"abc\n"),
+        ("arguments", ";on-console #10 DEO2 BRK " + echo,
+         ("A", "B"), True, True, 0, b"A\nB\nabc\n"),
+        ("cached-vector", ";on-console #10 DEO2 #00 #10 DEO BRK |0200 " + echo,
+         (), True, True, 0, b"abc\n"),
+        ("clear-in-argument", ";on-console #10 DEO2 BRK " + clear,
+         ("A",), True, True, 0, b"A"),
+        ("clear-in-input", ";on-console #10 DEO2 BRK " + clear,
+         (), True, True, 0, b"a"),
+    ]
+    for name, source, args, active, eof, code, output in cases:
+        rom = directory / "guest.rom"
+        rom.write_bytes(assemble(reference, ("|0100 " + source).encode()))
+        results = []
+        for mode in ["reference", "direct", "nested"]:
+            state = directory / f"{mode}.state"
+            command = ([reference, "--dump-state", state, "--fuel", "2000000", "--", rom, *args]
+                       if mode == "reference" else
+                       [WORKER, "--run", interpreter if mode == "nested" else rom, state, "2000000",
+                        *(["guest.rom"] if mode == "nested" else []), *args])
+            read_fd, write_fd = os.pipe()
+            with os.fdopen(read_fd, "rb", buffering=0) as reader, os.fdopen(write_fd, "wb", buffering=0) as writer:
+                writer.write(b"abc")
+                if eof:
+                    writer.close()
+                with subprocess.Popen(command, stdin=reader, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                      cwd=directory) as child:
+                    try:
+                        stdout, stderr = child.communicate(timeout=timeout)
+                    except subprocess.TimeoutExpired:
+                        child.kill()
+                        child.communicate()
+                        raise AssertionError(f"{name} {mode}: did not return with stdin {'closed' if eof else 'open'}; "
+                                             f"command: {shlex.join(map(str, command))}")
+                writer.close()
+                same(reader.read(), b"" if active else b"abc", name + " " + mode + " unread stdin")
+            result = Result(child.returncode, stdout, stderr, state.read_bytes())
+            same(len(result.state), 66327, name + " snapshot size")
+            same(result.state[8], 0, name + " exhausted instruction budget (inconclusive)")
+            golden(result, (code, output, b""), name + " " + mode)
+            results.append(result)
+        same(results[1].state, results[0].state, name + " direct C comparison")
+        same_guest(results[1], results[2], labels, name)
+        same(int.from_bytes(fields(results[2].state)["console vector"], "big"),
+             labels["vm/on-console"] if active else 0, name + " outer console vector")
+    print(f"PASS nested console: {len(cases)} startup, input-consumption, callback and exit cases", flush=True)
+
+
 def nested_examples(base, reference, timeout):
     directory = base / "nested"
     directory.mkdir()
-    binary, labels = symbols(reference, (HERE / "upstream/uxnmin.tal").read_bytes(),
-                             ["rom/mem", "wst/buf", "rst/buf", "pc/addr"])
-    interpreter = directory / "uxnmin.rom"
-    interpreter.write_bytes(binary)
+    interpreter, labels = nested_interpreter(directory, reference)
     programs = ["hello_world", "stack", "numbers", "functions", "variables", "if_else", "loops",
                 "objects", "reverse_string"]
     for name, data in [(name, b"") for name in programs] + [("fibonacci", bytes([n])) for n in range(7)]:
@@ -334,16 +426,7 @@ def nested_examples(base, reference, timeout):
         for result in (direct, nested):
             same(result.problem, "", name)
             same(result.state[8], 0, name + " exhausted instruction budget (inconclusive)")
-        golden(nested, (direct.code, direct.stdout, direct.stderr), name)
-        direct, nested = fields(direct.state), fields(nested.state)
-        memory = nested["ram"]
-        same(memory[labels["pc/addr"]:labels["pc/addr"] + 2], direct["pc"], name + " guest PC")
-        for stack, pointer, symbol in [("wstack", "wptr", "wst/buf"), ("rstack", "rptr", "rst/buf")]:
-            address = labels[symbol]
-            same(memory[address:address + 257], direct[stack] + direct[pointer], name + " " + stack)
-        # The nested interpreter's own code/stacks occupy the remainder of host RAM.
-        address = labels["rom/mem"]
-        same(memory[address:], direct["ram"][:65536 - address], name + " guest RAM")
+        same_guest(direct, nested, labels, name)
         print(f"PASS nested {name}{tuple(data)} ({time.monotonic() - start:.2f}s)", flush=True)
 
 
@@ -370,7 +453,8 @@ def main():
     if sum([config.random_only, bool(config.replay), config.extended]) > 1:
         parser.error("--random-only, --replay, and --extended are mutually exclusive")
     routine = not (config.random_only or config.replay)
-    process(["lake", "build", "test-worker", *(["uxn", "ProgramProofs"] if routine else [])],
+    process(["lake", "build", "test-worker",
+             *(["uxn", "ProgramProofs", "ProgramProofs.Uxnmin.Rom"] if routine else [])],
             cwd=ROOT, timeout=None, check=True)
     with tempfile.TemporaryDirectory(prefix="uxn-tests-") as temp:
         base = Path(temp)
@@ -391,13 +475,14 @@ def main():
             manifest = json.loads((EXAMPLES / "manifest.json").read_text())
             fixed = examples(manifest)
             if routine:
-                print("PASS build: uxn, test worker, ProgramProofs", flush=True)
+                print("PASS build: uxn, test worker, ProgramProofs, self-hosted ROM", flush=True)
                 corpus(reference, manifest, fixed, config.timeout_ms / 1000)
                 same(compare(next(c for c in fixed if c.name == "opctest"), reference, config),
                      False, "canon opcode test exhausted instruction budget (inconclusive)")
                 print("PASS canon opcode test: completed, output and full VM state match C", flush=True)
                 unit_tests(base, config.timeout_ms / 1000)
                 file_examples(base, reference, config.timeout_ms / 1000)
+                nested_console(base, reference, config.timeout_ms / 1000)
             fixed += regressions()
             for case in fixed:
                 case.fuel = min(case.fuel, config.fuel)

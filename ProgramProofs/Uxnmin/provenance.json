@@ -1,0 +1,15 @@
+{
+  "source_url": "https://wiki.xxiivv.com/etc/uxnmin.tal.txt",
+  "discussion_url": "https://lists.sr.ht/~rabbits/uxn/%3CCAF9m5JrRquhR0OgCBrud2ZhXZvuvvQ9rSdfeH=DJ_wRz+k_kjw@mail.gmail.com%3E",
+  "downloaded_utc": "2026-09-16",
+  "source_sha256": "344228d99d094f95b7f143ca7603650db13d715d3085c49aa054102be067588e",
+  "rom_sha256": "7897960167f3986a2c55f778abeb6013c2781eec8de40e9dd5d9e08823418c42",
+  "rom_size": 1110,
+  "guest_ram_base": "0x0859",
+  "guest_ram_size": "0xf7a7",
+  "guest_rom_base": "0x0959",
+  "upstream_sha256": "2e07bd45bb7d3a8cc6b27c8b7995e1dff907809ca8b11b4a49f00420a8c6fe8b",
+  "local_changes": [
+    "After guest startup, install the outer console callback only for a nonzero cached guest vector; otherwise halt the outer host without changing its exit code."
+  ]
+}

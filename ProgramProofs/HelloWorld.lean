@@ -161,7 +161,7 @@ theorem correct (s : List Byte)
     symbolic_steps 1 hfuel [machine, code, rom]
     simp [uxn_step, machine, pointer]
 
-  let host : Uxn.Host.State := { vm := machine 0 0 (fun _ => 0) }
+  let host : Uxn.Host.State := { vm := machine 0x100 0 (fun _ => 0) }
   obtain ⟨final, hrun, hpc, hptr, hfuel, hvector, hhalt⟩ :=
     loop s 0x112 (fun _ => 0) host string terminator hnoZero rfl
   have hboot :

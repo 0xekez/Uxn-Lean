@@ -16,7 +16,7 @@ scoped macro "state_reduce" : tactic => `(tactic| (
 /-- Unfold one host iteration and symbolically execute its VM instruction. -/
 scoped macro "host_step" "[" facts:term,* "]" : tactic => `(tactic| (
   rw [Uxn.Host.evalLoop.eq_def]
-  all_goals try simp [uxn_state]
+  all_goals try simp [uxn_state, Uxn.Host.step]
   all_goals try conv =>
     pattern Uxn.step _
     simp (disch := decide) only [machine, Uxn.step, stepM, fetchInstruction, fetchByte,

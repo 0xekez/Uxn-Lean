@@ -154,7 +154,7 @@ theorem correct :
   have boot (ram : Word → Byte) (hc : Code rom 54 ram) :
       ∃ final : Uxn.Host.State,
         evalLoop (.next (machine ram 0x100 Stack.empty Stack.empty))
-          { vm := machine ram 0 Stack.empty Stack.empty } = pure ((), final) ∧
+          { vm := machine ram 0x100 Stack.empty Stack.empty } = pure ((), final) ∧
         final.consoleVector = 0x107 ∧ final.fuel = none ∧ final.read 0x0f = 0 ∧
         final.vm.mem.ram = ram ∧ Holds final.vm.mem.wstk [] ∧ Holds final.vm.mem.rstk [] := by
     clear * - ram hc
@@ -324,7 +324,7 @@ theorem correct :
           run.readConsole
         finish) started
     refine ⟨afterRead, ?_, ?_, ?_⟩
-    · unfold run eval
+    · unfold run
       state_reduce
       simp only [Uxn.Host.State.write, Vector.set_replicate_self]
       rw [← initial_shape rom]

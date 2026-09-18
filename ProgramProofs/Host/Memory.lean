@@ -55,4 +55,28 @@ theorem Code.read {source : ByteArray} {count : Nat} {ram : Word → Byte}
     omega
   simpa only [haddress] using hc ⟨address.toNat - 256, by omega⟩
 
+/-- Initial RAM is the source ROM at 0x100, with zeroes outside it. -/
+theorem initial_ram_eq (source : ByteArray) (address : Word) :
+    (initialState source).vm.mem.ram address =
+      if 0x100 ≤ address.toNat ∧ address.toNat - 0x100 < source.size then
+        source.data[address.toNat - 0x100]!.toBitVec
+      else 0 := by
+  have bound : address.toNat < 0x10000 := address.isLt
+  by_cases present : 0x100 ≤ address.toNat ∧ address.toNat - 0x100 < source.size
+  · rw [if_pos present]
+    have position : 0x100 + BitVec.ofNat 16 (address.toNat - 0x100) = address := by bv_omega
+    simpa only [position] using ProgramProofs.Host.initial_ram_byte source
+      (address.toNat - 0x100) present.2 (by omega)
+  · rw [if_neg present, ProgramProofs.Host.initial_ram]
+    change ¬ (0x100 ≤ address.toNat ∧ address.toNat - 0x100 < source.data.size) at present
+    simp (disch := omega) [getElem!_def, getElem?_def, ByteArray.copySlice,
+      ByteArray.getElem_eq_getElem_data, ← ByteArray.size_data,
+      Array.getElem_append, Array.getElem_replicate]
+    split <;> rename_i equality
+    · split at equality
+      · cases Option.some.inj equality
+        rfl
+      · cases equality
+    · rfl
+
 end ProgramProofs.Host
