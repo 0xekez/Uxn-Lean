@@ -191,7 +191,7 @@ private def liveMemoryTest : IO Unit := do
     0xa0, 0, 1, 0x80, 0xaa, 0x37,
     0xa0, 3, 0, 0x80, 0xac, 0x37,
     0xa0, 3, 0, 0x14, 0]⟩
-  let (_, host) ← (eval 0x100).run (initialState rom)
+  let host ← (initialState rom).run
   check (host.vm.mem.wstk.ptr == 1 && host.vm.mem.wstk.data 0 == 97 &&
     host.readWord Port.File.success == 1) "device request must use live memory and resume with its patch"
 
@@ -219,12 +219,72 @@ private def snapshot (fuel : Nat) (host : Uxn.Host.State) : ByteArray :=
   bytes 0x100 (fun i => UInt8.ofBitVec (host.vm.mem.wstk.data (BitVec.ofNat 8 i))) ++
   bytes 0x100 (fun i => UInt8.ofBitVec (host.vm.mem.rstk.data (BitVec.ofNat 8 i)))
 
+private def hostTests : IO Unit := do
+  -- Four instructions: push a value and address, store, then BRK.
+  let rom : ByteArray := ⟨#[0x80, 42, 0x80, 0x90, 0x11, 0]⟩
+  let initial := initialState rom
+  let some action := initial.next | throw (IO.userError "reset has no next step")
+  let once ← action
+  check (once.vm.pc == 0x102 && once.vm.mem.wstk.ptr == 1 &&
+    once.vm.mem.wstk.data 0 == 42 && once.vm.mem.ram 0x90 == 0) "next executes one instruction"
+  let paused ← initial.run (some 2)
+  check (paused.fuel == some 0 && paused.next.isSome &&
+    paused.vm.pc == 0x104 && paused.vm.mem.ram 0x90 == 0) "pause retains the next instruction"
+  let finished ← initial.run (some 4)
+  check (finished.fuel == some 0 && finished.next.isNone &&
+    finished.vm.mem.ram 0x90 == 42) "exact-budget completion is distinguishable from a pause"
+  expect (snapshot 0 (← paused.run)) (snapshot 0 (← (initialState rom).run))
+    "resume after storing operands"
+  check ((← (initialState rom).run (some 0)).next.isSome) "zero budget is not completion"
+  expect (snapshot 4 (← finished.run (some 0))) (snapshot 4 finished)
+    "completed states stay completed"
+
+  -- The callback counts events and sets System/state on type 4. Two arguments
+  -- generate A, B, newline, C, newline, then the final callback despite halt.
+  -- No stdin read is needed, so restarting the host or losing a continuation
+  -- changes either the event count, the final snapshot, or termination.
+  let callbacks : ByteArray := ⟨#[
+    0xa0, 0x01, 0x07, 0x80, 0x10, 0x37, 0,
+    0x80, 0x80, 0x10, 0x01, 0x80, 0x80, 0x11,
+    0x80, 0x17, 0x16, 0x80, 4, 0x08, 0x80, 0x0f, 0x17, 0]⟩
+  let initial := initialState callbacks ["AB", "C"]
+  let final ← initial.run
+  check (final.vm.mem.ram 0x80 == 6 && final.read Port.System.state == 1 &&
+    final.next.isNone) "arguments and the final halt callback"
+  for budget in [0, 1, 3, 4, 5, 15, 16, 17, 28, 40, 64, 75, 76, 77] do
+    expect (snapshot 0 (← (← initial.run (some budget)).run))
+      (snapshot 0 final)
+      s!"callback pause/resume at instruction {budget}"
+  for (args, count) in [(["", "C"], 4), ([String.ofList ['A', Char.ofNat 0, 'B'], "C"], 5)] do
+    check ((← (initialState callbacks args).run).vm.mem.ram 0x80 == count)
+      "empty and NUL-terminated arguments"
+
+  IO.FS.writeBinFile "host.rom" rom
+  let loaded ← file "host.rom"
+  check (loaded.vm.pc == 0x100 && loaded.vm.mem.ram 0x90 == 0) "loading does not execute reset"
+  expect (snapshot 0 (← loaded.run)) (snapshot 0 (← (initialState rom).run))
+    "file and image entry points"
+  check ((← load (← IO.FS.Handle.mk "host.rom" .read) (limit := 0)).vm.mem.ram 0x100 == 0)
+    "shared loader honors the read limit"
+  expect (snapshot 4 (← (← file "host.rom").run (some 4))) (snapshot 4 finished)
+    "loading does not spend instruction fuel"
+  IO.FS.writeBinFile "host.rom" callbacks
+  let loaded ← (← file "host.rom" ["AB", "C"]).run (some 0)
+  check (loaded.vm.pc == 0x100 && loaded.read Port.Console.type == 1)
+    "zero instruction budget still loads the ROM and its arguments"
+  IO.FS.removeFile "host.rom"
+  expect (snapshot 0 (← loaded.run)) (snapshot 0 final) "resuming does not reopen the ROM"
+  match ← (file "host.rom").toBaseIO with
+  | .error _ => pure ()
+  | .ok _ => throw (IO.userError "loading failure was swallowed")
+  IO.println "PASS Host: single steps, completion, budgets, callback pause/resume, argument boundaries, loading"
+
 def main (args : List String) : IO UInt32 := do
   match args with
-  | ["--unit"] => unitTests; return 0
+  | ["--unit"] => unitTests; hostTests; return 0
   | "--run" :: rom :: output :: fuel :: args =>
     let some fuel := fuel.toNat? | throw (IO.userError "invalid instruction budget")
-    let (code, host) ← Host.run (← IO.FS.readBinFile rom) args (some fuel)
+    let host ← (initialState (← IO.FS.readBinFile rom) args).run (some fuel)
     IO.FS.writeBinFile output (snapshot fuel host)
-    return code
+    return host.exitCode
   | _ => throw (IO.userError "test worker: invoke python3 tests/run.py")

@@ -19,7 +19,7 @@ theorem copied_byte (source : ByteArray) (destination : Array UInt8)
 theorem initial_ram (source : ByteArray) (address : Word) :
     (initialState source).vm.mem.ram address =
       (source.copySlice 0 ⟨Array.replicate 0x10000 0⟩ 0x100 (0x10000 - 0x100))[address.toNat]!.toBitVec := by
-  dsimp only [initialState]
+  dsimp only [initialState, Uxn.Host.State.write]
 
 theorem initial_ram_byte (source : ByteArray) (i : Nat)
     (hi : i < source.size) (hbound : i < 0xff00) :

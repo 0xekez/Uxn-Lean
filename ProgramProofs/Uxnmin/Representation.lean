@@ -1,6 +1,6 @@
 import ProgramProofs.Uxnmin.Code
 import ProgramProofs.Uxnmin.Embedding
-import ProgramProofs.Host.Execution
+import ProgramProofs.Host.Reaches
 
 namespace ProgramProofs.Uxnmin
 open Uxn ProgramProofs.Host

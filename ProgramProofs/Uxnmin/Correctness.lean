@@ -1,51 +1,64 @@
--- The self-hosted Uxn VM is a well-founded stuttering simulation of
--- the Uxn VM.
-import Uxn.Host
-import ProgramProofs.Uxnmin.Rom
-import ProgramProofs.RankedSimulation
-import ProgramProofs.Uxnmin.Proof
+import ProgramProofs.Uxnmin.Blocks
+
+/-!
+uxnmin.tal is a well-founded stuttering simulation of uxn.
+-/
 
 namespace ProgramProofs.Uxnmin
 open Uxn Uxn.Host
 
-abbrev Configuration := EST.Out IO.Error IO.RealWorld (Outcome × Uxn.Host.State)
+/-- A host state and IO world state. -/
+abbrev Configuration := Model.Configuration
 
--- Our label is the state of the IO world.
-def label : Configuration → EST.Out IO.Error IO.RealWorld Unit
-  | .ok _ world => .ok () world
-  | .error error world => .error error world
+abbrev Configuration.starting (boot : IO Uxn.Host.State) (world : Void IO.RealWorld) :
+    Configuration := Model.Configuration.starting boot world
 
-def next : Configuration → Option Configuration
-  | .ok (.next vm, host) world => some (Uxn.Host.step vm host world)
-  | .ok (.brk _, _) _ | .error _ _ => none
+abbrev Configuration.running (state : Uxn.Host.State) (world : Void IO.RealWorld) :
+    Configuration := Model.Configuration.running state world
 
-def Reachable (start state : Configuration) : Prop :=
-  Relation.ReflTransGen (fun a b => next a = some b) start state
+abbrev Configuration.failed (error : IO.Error) (world : Void IO.RealWorld) :
+    Configuration := Model.Configuration.failed error world
 
--- Replace a Configuration's VM's RAM at addresses ≥ cutoff.
-def replaceOutside (cutoff : Nat) (replacement : Word → Byte) : Configuration → Configuration
-  | .ok (.next vm, host) world => .ok (.next (replace vm), host) world
-  | .ok (.brk vm, host) world => .ok (.brk (replace vm), host) world
-  | .error error world => .error error world
-where
-  replace (vm : Uxn.State) : Uxn.State :=
-    { vm with mem.ram := fun address =>
-        if address.toNat < cutoff then vm.mem.ram address else replacement address }
+def Configuration.ofResult : EST.Out IO.Error IO.RealWorld Uxn.Host.State → Configuration
+  | .ok state world => .running state world
+  | .error error world => .failed error world
 
--- uxnmin provides 0xf7a7 bytes of guest RAM (ramSize), relocated
--- above its own code and state. If, at every reachable state,
--- replacing outside RAM before an instruction is the same as
--- replacing it afterward, then outside RAM neither affects execution
--- nor is modified.
+def Configuration.next : Configuration → Option Configuration
+  | .starting boot world => some (.ofResult (boot world))
+  | .running state world => state.next.map (fun action => .ofResult (action world))
+  | .failed _ _ => none
+
+/-- Our refinement's labels are the IO world and Host exit code. -/
+def label : Configuration → EST.Out IO.Error IO.RealWorld (Option UInt32)
+  | .starting _ world => .ok none world
+  | .running state world => .ok (if state.next.isNone then some state.exitCode else none) world
+  | .failed error world => .error error world
+
+def Reachable (start finish : Configuration) : Prop :=
+  Relation.ReflTransGen (fun a b => a.next = some b) start finish
+
+/-- Change RAM outside the range uxnmin.tal allows guest programs to access. -/
+def replaceOutside (ram : Word → Byte) : Configuration → Configuration
+  | .running state world => .running
+      { state with vm.mem.ram := fun address =>
+          if address.toNat < ramSize then state.vm.mem.ram address else ram address } world
+  | config => config
+
+/-- At every reachable loaded state, changing outside RAM before a host step
+has the same effect as changing it afterward, thus outside RAM neither affects
+execution nor is modified. -/
 def Confined (start : Configuration) : Prop :=
-  ∀ state, Reachable start state → ∀ ram,
-    next (replaceOutside ramSize ram state) = (next state).map (replaceOutside ramSize ram)
+  ∀ state world,
+    let current := Configuration.running state world
+    Reachable start current → ∀ ram,
+      (replaceOutside ram current).next = current.next.map (replaceOutside ram)
 
--- The reachable guest instructions use the device operations
--- supported by uxnmin.
+/-- Every reachable guest instruction uses device operations supported
+by uxnmin.tal. -/
 def CompatibleDevices (start : Configuration) : Prop :=
-  ∀ vm host world, Reachable start (.ok (.next vm, host) world) →
-    match Uxn.step vm with
+  ∀ state world after, Reachable start (.running state world) →
+    state.control = .evaluating after →
+    match Uxn.step state.vm with
     | .done _ => True
     | .request (.read8 port) _ _ => port ∉ Port.File.ports
     | .request (.read16 port) _ _ =>
@@ -58,25 +71,48 @@ def CompatibleDevices (start : Configuration) : Prop :=
         (∀ p ∈ [port, port + 1],
           p ∉ Port.File.ports ∧ p ∉ [Port.Console.read, Port.Console.type])
 
--- If the self-hosted VM can load filename, and filename's contents
--- correspond to program, then the self-hosted VM takes some number of
--- steps to initialize itself, and from then on is a simulation
--- refinement of Uxn.Host.
-theorem correct (filename : String) (program : ByteArray)
-    (before after : Void IO.RealWorld)
+def Loadable (filename : String) (world : Void IO.RealWorld) : Prop :=
+  match (do (← File.Handle.open filename).read (ramSize - 0x100).toUSize) world with
+  | .ok program after => program.size ≤ ramSize - 0x100 ∧
+      Uxn.Host.file filename [] world = .ok (initialState program) after
+  | .error _ _ => False
+
+/-- A well-founded stuttering simulation where every step of the
+specification corresponds to ≥1 step of the implementation, i.e. the
+specification never stutters wrt the guest. -/
+def RankedSimulation (R : Configuration → Configuration → Prop) : Prop :=
+  (∀ direct nested, R direct nested → label direct = label nested) ∧
+  ∃ rank : Configuration → Configuration → Nat,
+    ∀ direct nested, R direct nested →
+      Option.Rel R direct.next nested.next ∨
+        ∃ nested', nested.next = some nested' ∧ R direct nested' ∧
+          rank direct nested' < rank direct nested
+
+theorem correct (filename : String) (world : Void IO.RealWorld)
     (filenameFits : filename.utf8ByteSize < 0x40)
     (filenameNoNul : 0 ∉ filename.toUTF8.data)
-    (programFits : program.size ≤ ramSize - 0x0100)
-    (read : (do
-      (← File.Handle.open filename).read (ramSize - 0x0100).toUSize) before = .ok program after) :
-    let initial := Uxn.Host.initialState program
-    let start : Configuration := .ok (.next initial.vm, initial) after
-    Confined start → CompatibleDevices start →
-    ∃ steps host, ∃ R : Configuration → Configuration → Prop,
-      Uxn.Host.run rom [filename] (some steps) before = .ok (0, host) after ∧
-      host.fuel = some 0 ∧
-      R start (.ok (.next host.vm, host) after) ∧
-      RankedSimulation next next label label R := by
-  exact Proof.correct filename program before after filenameFits filenameNoNul programFits read
+    (loadable : Loadable filename world) :
+    let direct := Configuration.starting (Uxn.Host.file filename) world
+    Confined direct → CompatibleDevices direct →
+    ∃ R, R direct (.running (initialState rom [filename]) world) ∧
+      RankedSimulation R := by
+  intro direct confined compatible
+  obtain ⟨R, includes, simulation⟩ := ProgramProofs.RankedSimulation.of_silent_blocks
+    (Model.Boundary filename world)
+    (Model.boundary_blocks filename world filenameFits filenameNoNul loadable confined compatible)
+  exact ⟨R, includes _ _ .loading, simulation⟩
+
+theorem correct_file (interpreter filename : String) (before world : Void IO.RealWorld)
+    (interpreterLoaded : Uxn.Host.file interpreter [filename] before =
+      .ok (initialState rom [filename]) world)
+    (filenameFits : filename.utf8ByteSize < 0x40)
+    (filenameNoNul : 0 ∉ filename.toUTF8.data)
+    (loadable : Loadable filename world) :
+    let direct := Configuration.starting (Uxn.Host.file filename) world
+    Confined direct → CompatibleDevices direct →
+    ∃ R, R direct (.ofResult (Uxn.Host.file interpreter [filename] before)) ∧
+      RankedSimulation R := by
+  simpa only [interpreterLoaded, Configuration.ofResult] using
+    correct filename world filenameFits filenameNoNul loadable
 
 end ProgramProofs.Uxnmin

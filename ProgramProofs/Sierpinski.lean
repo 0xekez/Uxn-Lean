@@ -37,11 +37,11 @@ example : pascalTriangle 4 =
 /-- The ROM prints Pascal's triangle. -/
 theorem correct (k : Nat) (hk : k < 8) :
     ∃ final,
-      Uxn.Host.run (rom (2 ^ k)) =
+      (initialState (rom (2 ^ k))).run =
         (do
           for byte in (pascalTriangle (2 ^ k)).toUTF8.data.toList do
             (← IO.getStdout).write ⟨#[byte]⟩
-          pure (0, final)) := by
+          pure final) ∧ final.exitCode = 0 := by
   have narrow_add (a b : Word) : (a + b).setWidth 8 = a.setWidth 8 + b.setWidth 8 :=
     BitVec.setWidth_add a b (by decide)
   have widen_lt (a b : Byte) : a.setWidth 16 < b.setWidth 16 ↔ a < b := by bv_omega
@@ -110,28 +110,28 @@ theorem correct (k : Nat) (hk : k < 8) :
   -- First establish termination and the exact bitwise triangle for any positive
   -- height that fits in a byte.
   have run_triangle (h : Nat) (hpos : 0 < h) (hfit : h < 256) :
-      ∃ final, Uxn.Host.run (rom h) =
-        (do out (rows h 0 h); pure (0, final)) := by
+      ∃ final, (initialState (rom h)).run =
+        (do out (rows h 0 h); pure final) ∧ final.exitCode = 0 := by
     -- Induct on the number of rows left, composing padding, entries, and newline.
-    have row_loop (h : Nat) (ram : Word → Byte) (hc : Code (rom h) 52 ram)
+    have row_loop (after : ReturnTo) (h : Nat) (ram : Word → Byte) (hc : Code (rom h) 52 ram)
         (n count : Nat) (hcount : 0 < count) (hsum : n + count = h) (hfit : h < 256)
         (w r : Byte → Byte) (hr : masks r) (hw : w 0 = BitVec.ofNat 8 (count - 1))
-        (host : Uxn.Host.State) (hf : host.fuel = none) :
+        (host : Uxn.Host.State) :
         ∃ finalVM,
-          evalLoop (.next (vm ram 0x10a 1 w r)) host =
-            (do out (rows h n count); pure ((), { host.write 24 10 with vm := finalVM })) := by
+          evaluate after (vm ram 0x10a 1 w r) host =
+            (do out (rows h n count); finish after { host.write 24 10 with vm := finalVM }) := by
       have enter_step (h : Nat) (ram : Word → Byte) (hc : Code (rom h) 52 ram)
           (l : Byte) (w r : Byte → Byte) (hw : w 0 = l)
-          (host : Uxn.Host.State) (hf : host.fuel = none) :
+          (host : Uxn.Host.State) :
           ∃ w',
-            evalLoop (.next (vm ram 0x10a 1 w r)) host =
-              evalLoop (.next (vm ram 0x10c 3 w' r)) host ∧
+            evaluate after (vm ram 0x10a 1 w r) host =
+              evaluate after (vm ram 0x10c 3 w' r) host ∧
             w' 0 = l ∧ w' 1 = l ∧ w' 2 = l + 1 := by
         simp at hw
         refine ⟨?_, ?_, ?_⟩
         rotate_left 1
-        · symbolic_steps 2 hf [narrow_add, vm, Code.read hc, rom, hw]
-          simp [vm, machine]
+        · symbolic_steps 2 [narrow_add, vm, Code.read hc, rom, hw]
+          simp [evaluate, vm, machine]
           rfl
         · simp [hw]
 
@@ -140,37 +140,37 @@ theorem correct (k : Nat) (hk : k < 8) :
           (l : Byte) (p : Nat) (hp : 0 < p) (hpfit : p < 256)
           (w r : Byte → Byte) (hr : masks r)
           (hw0 : w 0 = l) (hw1 : w 1 = l) (hw2 : w 2 = BitVec.ofNat 8 p)
-          (host : Uxn.Host.State) (hf : host.fuel = none) :
+          (host : Uxn.Host.State) :
           ∃ w',
-            evalLoop (.next (vm ram 0x10c 3 w r)) host =
+            evaluate after (vm ram 0x10c 3 w r) host =
               (do out (spaces p)
-                  evalLoop (.next (vm ram 0x114 3 w' r)) (host.write 24 32)) ∧
+                  evaluate after (vm ram 0x114 3 w' r) (host.write 24 32)) ∧
             w' 0 = l ∧ w' 1 = l ∧ w' 2 = 0 := by
         have pad_step (h : Nat) (ram : Word → Byte) (hc : Code (rom h) 52 ram)
             (l p : Byte) (w r : Byte → Byte) (hr : masks r)
             (hw0 : w 0 = l) (hw1 : w 1 = l) (hw2 : w 2 = p)
-            (host : Uxn.Host.State) (hf : host.fuel = none) :
+            (host : Uxn.Host.State) :
             ∃ w',
-              evalLoop (.next (vm ram 0x10c 3 w r)) host =
+              evaluate after (vm ram 0x10c 3 w r) host =
                 (do writeStdout 32
-                    evalLoop
-                      (.next (vm ram (if p - 1 = 0 then 0x114 else 0x10c) 3 w' r))
+                    evaluate after
+                      (vm ram (if p - 1 = 0 then 0x114 else 0x10c) 3 w' r)
                       (host.write 24 32)) ∧
               w' 0 = l ∧ w' 1 = l ∧ w' 2 = p - 1 := by
           rcases hr with ⟨hr0, hr1, hr2, hr3⟩
           simp at hr0 hr1 hr2 hr3 hw0 hw1 hw2
           refine ⟨Function.update (Function.update (Function.update w 3 1) 2 (p - 1)) 3 (p - 1), ?_, ?_⟩
-          · symbolic_steps 5 hf [respond, deo_stdout, narrow_add, vm, Code.read hc, rom, hr0, hr1, hr2, hr3, hw0, hw1,
+          · symbolic_steps 5 [respond, deo_stdout, narrow_add, vm, Code.read hc, rom, hr0, hr1, hr2, hr3, hw0, hw1,
               hw2]
             simp only [BitVec.sub_eq_add_neg]
             split <;> rename_i hz <;>
-              simp [uxn_state, uxn_step, narrow_add, vm, Code.read hc, rom, hz, writeStdout, bind_assoc]
+              simp [evaluate, Uxn.Host.State.write, uxn_state, uxn_step, narrow_add, vm, Code.read hc, rom, hz, writeStdout, bind_assoc]
           · simp [hw0, hw1, BitVec.sub_eq_add_neg]
 
         induction p generalizing w host with
         | zero => omega
         | succ p ih =>
-          obtain ⟨w', hs, h0, h1, h2⟩ := pad_step h ram hc l (BitVec.ofNat 8 (p + 1)) w r hr hw0 hw1 hw2 host hf
+          obtain ⟨w', hs, h0, h1, h2⟩ := pad_step h ram hc l (BitVec.ofNat 8 (p + 1)) w r hr hw0 hw1 hw2 host
           have hsub : BitVec.ofNat 8 (p + 1) - 1 = BitVec.ofNat 8 p := by bv_omega
           rw [hsub] at hs h2
           by_cases hz : p = 0
@@ -180,7 +180,7 @@ theorem correct (k : Nat) (hk : k < 8) :
           · have hbyte : BitVec.ofNat 8 p ≠ 0 := by bv_omega
             rw [if_neg hbyte] at hs
             obtain ⟨w'', hrun, h0', h1', h2'⟩ := ih (by omega) (by omega) w' h0 h1 h2
-              (host.write 24 32) hf
+              (host.write 24 32)
             refine ⟨w'', ?_, h0', h1', h2'⟩
             rw [hs, hrun]
             simp only [write_overwrite, out_spaces_succ, bind_assoc, pure_bind]
@@ -191,22 +191,22 @@ theorem correct (k : Nat) (hk : k < 8) :
           (w r : Byte → Byte) (hr : masks r)
           (hw0 : w 0 = BitVec.ofNat 8 l) (hw1 : w 1 = BitVec.ofNat 8 l)
           (hw2 : w 2 = BitVec.ofNat 8 i)
-          (host : Uxn.Host.State) (hf : host.fuel = none) :
+          (host : Uxn.Host.State) :
           ∃ w' r',
-            evalLoop (.next (vm ram 0x114 3 w r)) host =
+            evaluate after (vm ram 0x114 3 w r) host =
               (do out (cells l i count)
-                  evalLoop (.next (vm ram 0x126 3 w' r')) (host.write 24 32)) ∧
+                  evaluate after (vm ram 0x126 3 w' r') (host.write 24 32)) ∧
             (w' 0 = BitVec.ofNat 8 l ∧ w' 1 = BitVec.ofNat 8 l ∧ w' 2 = BitVec.ofNat 8 (i + count)) ∧
             masks r' := by
         have emit_step (h : Nat) (ram : Word → Byte) (hc : Code (rom h) 52 ram)
             (l i : Byte) (w r : Byte → Byte) (hr : masks r)
             (hw0 : w 0 = l) (hw1 : w 1 = l) (hw2 : w 2 = i)
-            (host : Uxn.Host.State) (hf : host.fuel = none) :
+            (host : Uxn.Host.State) :
             ∃ w' r',
-              evalLoop (.next (vm ram 0x114 3 w r)) host =
+              evaluate after (vm ram 0x114 3 w r) host =
                 (do writeStdout (if l &&& i = 0 then 42 else 32)
                     writeStdout 32
-                    evalLoop (.next (vm ram 0x11d 3 w' r')) (host.write 24 32)) ∧
+                    evaluate after (vm ram 0x11d 3 w' r') (host.write 24 32)) ∧
               (w' 0 = l ∧ w' 1 = l ∧ w' 2 = i) ∧ masks r' := by
           rcases hr with ⟨hr0, hr1, hr2, hr3⟩
           simp at hr0 hr1 hr2 hr3 hw0 hw1 hw2
@@ -214,18 +214,18 @@ theorem correct (k : Nat) (hk : k < 8) :
           · simp at hz
             refine ⟨?_, ?_, ?_, ?_, ?_⟩
             rotate_left 2
-            · symbolic_steps 7 hf [respond, deo_stdout, narrow_add, vm, Code.read hc, rom, hr0, hr1, hr2, hr3, hw0, hw1,
+            · symbolic_steps 7 [respond, deo_stdout, narrow_add, vm, Code.read hc, rom, hr0, hr1, hr2, hr3, hw0, hw1,
                 hw2, BitVec.and_comm, hz]
-              simp [vm, machine, hz, write_overwrite, writeStdout, bind_assoc]
+              simp [evaluate, vm, machine, hz, write_overwrite, writeStdout, bind_assoc]
               rfl
             · simp [hw0, hw1, hw2]
             · simp [masks, hr0, hr1, hr2, hr3]
           · simp at hz
             refine ⟨?_, ?_, ?_, ?_, ?_⟩
             rotate_left 2
-            · symbolic_steps 5 hf [respond, deo_stdout, narrow_add, vm, Code.read hc, rom, hr0, hr1, hr2, hr3, hw0, hw1,
+            · symbolic_steps 5 [respond, deo_stdout, narrow_add, vm, Code.read hc, rom, hr0, hr1, hr2, hr3, hw0, hw1,
                 hw2, BitVec.and_comm, hz]
-              simp [vm, machine, hz, write_overwrite, writeStdout, bind_assoc]
+              simp [evaluate, vm, machine, hz, write_overwrite, writeStdout, bind_assoc]
               rfl
             · simp [hw0, hw1, hw2]
             · simp [masks, hr0, hr1, hr2, hr3]
@@ -233,11 +233,11 @@ theorem correct (k : Nat) (hk : k < 8) :
         have advance_step (h : Nat) (ram : Word → Byte) (hc : Code (rom h) 52 ram)
             (l i : Byte) (w r : Byte → Byte)
             (hw0 : w 0 = l) (hw1 : w 1 = l) (hw2 : w 2 = i)
-            (host : Uxn.Host.State) (hf : host.fuel = none) :
+            (host : Uxn.Host.State) :
             ∃ w',
-              evalLoop (.next (vm ram 0x11d 3 w r)) host =
-                evalLoop
-                  (.next (vm ram (if l + (i + 1) < BitVec.ofNat 8 h then 0x114 else 0x126) 3 w' r))
+              evaluate after (vm ram 0x11d 3 w r) host =
+                evaluate after
+                  (vm ram (if l + (i + 1) < BitVec.ofNat 8 h then 0x114 else 0x126) 3 w' r)
                   host ∧
               w' 0 = l ∧ w' 1 = l ∧ w' 2 = i + 1 := by
           simp at hw0 hw1 hw2
@@ -245,9 +245,9 @@ theorem correct (k : Nat) (hk : k < 8) :
           all_goals
             refine ⟨?_, ?_, ?_⟩
             rotate_left 1
-            · symbolic_steps 6 hf [narrow_add, vm, Code.read hc, rom, hw0, hw1, hw2, widen_lt,
+            · symbolic_steps 6 [narrow_add, vm, Code.read hc, rom, hw0, hw1, hw2, widen_lt,
                 widen_le, UInt8.toBitVec_ofNat', BitVec.add_comm, hc']
-              simp [vm, machine, BitVec.add_assoc, BitVec.add_comm, hc']
+              simp [evaluate, vm, machine, BitVec.add_assoc, BitVec.add_comm, hc']
               rfl
             · simp [hw0, hw1, hw2]
 
@@ -255,9 +255,9 @@ theorem correct (k : Nat) (hk : k < 8) :
         | zero => omega
         | succ count ih =>
           obtain ⟨we, re, he, ⟨he0, he1, he2⟩, her⟩ :=
-            emit_step h ram hc (BitVec.ofNat 8 l) (BitVec.ofNat 8 i) w r hr hw0 hw1 hw2 host hf
+            emit_step h ram hc (BitVec.ofNat 8 l) (BitVec.ofNat 8 i) w r hr hw0 hw1 hw2 host
           obtain ⟨wa, ha, ha0, ha1, ha2⟩ := advance_step h ram hc (BitVec.ofNat 8 l) (BitVec.ofNat 8 i)
-            we re he0 he1 he2 (host.write 24 32) hf
+            we re he0 he1 he2 (host.write 24 32)
           have hi' : BitVec.ofNat 8 i + 1 = BitVec.ofNat 8 (i + 1) := by rw [BitVec.ofNat_add]; rfl
           rw [hi'] at ha2
           by_cases hz : count = 0
@@ -270,7 +270,7 @@ theorem correct (k : Nat) (hk : k < 8) :
           · have hcmp : BitVec.ofNat 8 l + (BitVec.ofNat 8 i + 1) < BitVec.ofNat 8 h := by bv_omega
             rw [if_pos hcmp] at ha
             obtain ⟨w', r', hrun, hw', hr'⟩ := ih (i + 1) (by omega) (by omega) wa re her ha0 ha1 ha2
-              (host.write 24 32) hf
+              (host.write 24 32)
             refine ⟨w', r', ?_, ?_, hr'⟩
             · rw [he, ha, hrun]
               simp only [write_overwrite, cells_succ, out_append, out_cell, bind_assoc, pure_bind]
@@ -278,62 +278,60 @@ theorem correct (k : Nat) (hk : k < 8) :
 
       have newline_step (h : Nat) (ram : Word → Byte) (hc : Code (rom h) 52 ram)
           (w r : Byte → Byte) (hr : masks r)
-          (host : Uxn.Host.State) (hf : host.fuel = none) :
+          (host : Uxn.Host.State) :
           ∃ r',
-            evalLoop (.next (vm ram 0x126 3 w r)) host =
+            evaluate after (vm ram 0x126 3 w r) host =
               (do writeStdout 10
-                  evalLoop (.next (vm ram 0x129 1 w r')) (host.write 24 10)) ∧ masks r' := by
+                  evaluate after (vm ram 0x129 1 w r') (host.write 24 10)) ∧ masks r' := by
         rcases hr with ⟨hr0, hr1, hr2, hr3⟩
         simp at hr0 hr1 hr2 hr3
         refine ⟨?_, ?_, ?_⟩
         rotate_left 1
-        · symbolic_steps 3 hf [respond, deo_stdout, narrow_add, vm, Code.read hc, rom, hr0, hr1, hr2, hr3]
-          simp [vm, machine, writeStdout, bind_assoc]
+        · symbolic_steps 3 [respond, deo_stdout, narrow_add, vm, Code.read hc, rom, hr0, hr1, hr2, hr3]
+          simp [evaluate, vm, machine, writeStdout, bind_assoc]
           rfl
         · simp [masks, hr0, hr1, hr2, hr3]
 
       have next_row_step (h : Nat) (ram : Word → Byte) (hc : Code (rom h) 52 ram)
           (l : Byte) (w r : Byte → Byte) (hw : w 0 = l)
-          (host : Uxn.Host.State) (hf : host.fuel = none) :
+          (host : Uxn.Host.State) :
           ∃ w',
-            evalLoop (.next (vm ram 0x129 1 w r)) host =
-              evalLoop
-                (.next (vm ram (if l = 0 then 0x130 else 0x10a) 1 w' r)) host ∧
+            evaluate after (vm ram 0x129 1 w r) host =
+              evaluate after
+                (vm ram (if l = 0 then 0x130 else 0x10a) 1 w' r) host ∧
             w' 0 = l - 1 := by
         simp at hw
         by_cases hz : l = 0#8
         all_goals
           refine ⟨?_, ?_, ?_⟩
           rotate_left 1
-          · symbolic_steps 4 hf [narrow_add, vm, Code.read hc, rom, hw, hz]
-            simp [vm, machine, hz]
+          · symbolic_steps 4 [narrow_add, vm, Code.read hc, rom, hw, hz]
+            simp [evaluate, vm, machine, hz]
             rfl
           · simp [hw, hz, BitVec.sub_eq_add_neg]
 
       have stop_step (h : Nat) (ram : Word → Byte) (hc : Code (rom h) 52 ram)
-          (w r : Byte → Byte) (host : Uxn.Host.State)
-          (hf : host.fuel = none) :
-          evalLoop (.next (vm ram 0x130 1 w r)) host =
-            pure ((), { host with vm := machine ram 0x134 ⟨w, 0⟩ ⟨r, 0⟩ }) := by
-        symbolic_steps 4 hf [narrow_add, vm, Code.read hc, rom]
-        rw [evalLoop.eq_def]
-        rfl
+          (w r : Byte → Byte) (host : Uxn.Host.State) :
+          evaluate after (vm ram 0x130 1 w r) host =
+            finish after { host with vm := machine ram 0x134 ⟨w, 0⟩ ⟨r, 0⟩ } := by
+        symbolic_steps 4 [narrow_add, vm, Code.read hc, rom]
+        cases after <;> simp [finish, machine]
 
       induction count generalizing n w r host with
       | zero => omega
       | succ count ih =>
-        obtain ⟨we, he, he0, he1, he2⟩ := enter_step h ram hc (BitVec.ofNat 8 count) w r hw host hf
+        obtain ⟨we, he, he0, he1, he2⟩ := enter_step h ram hc (BitVec.ofNat 8 count) w r hw host
         have hinc : BitVec.ofNat 8 count + 1 = BitVec.ofNat 8 (count + 1) := by rw [BitVec.ofNat_add]; rfl
         rw [hinc] at he2
         obtain ⟨wp, hp, hp0, hp1, hp2⟩ := pad_loop h ram hc (BitVec.ofNat 8 count) (count + 1)
-          (by omega) (by omega) we r hr he0 he1 he2 host hf
+          (by omega) (by omega) we r hr he0 he1 he2 host
         obtain ⟨wf, rf, hfill, ⟨hf0, hf1, hf2⟩, hfr⟩ := fill_loop h ram hc count 0 (h - count)
           (by omega) (by omega) hfit wp r hr hp0 hp1 hp2
-          (host.write 24 32) hf
+          (host.write 24 32)
         obtain ⟨rn, hn, hnr⟩ := newline_step h ram hc wf rf hfr
-          ((host.write 24 32).write 24 32) hf
+          ((host.write 24 32).write 24 32)
         obtain ⟨wn, ha, hwa⟩ := next_row_step h ram hc (BitVec.ofNat 8 count) wf rn hf0
-          (((host.write 24 32).write 24 32).write 24 10) hf
+          (((host.write 24 32).write 24 32).write 24 10)
         have hspace : h - n = count + 1 := by omega
         have hlength : h - (n + 1) = count := by omega
         have hwidth : h - count = n + 1 := by omega
@@ -342,7 +340,7 @@ theorem correct (k : Nat) (hk : k < 8) :
           rw [if_pos (show (0#8) = (0 : Byte) from rfl)] at ha
           refine ⟨machine ram 0x134 ⟨wn, 0⟩ ⟨rn, 0⟩, ?_⟩
           rw [he, hp, hfill, hn, ha, stop_step h ram hc wn rn
-            (((host.write 24 32).write 24 32).write 24 10) hf]
+            (((host.write 24 32).write 24 32).write 24 10)]
           simp only [write_overwrite, rows_succ, rows_zero, String.append_empty, line,
             hspace, hlength, hwidth, out_append, out_newline, bind_assoc]
         · have hbyte : BitVec.ofNat 8 count ≠ 0 := by bv_omega
@@ -350,22 +348,22 @@ theorem correct (k : Nat) (hk : k < 8) :
           have hsub : BitVec.ofNat 8 count - 1 = BitVec.ofNat 8 (count - 1) := by bv_omega
           rw [hsub] at hwa
           obtain ⟨finalVM, hrun⟩ := ih (n + 1) (by omega) (by omega) wn rn hnr hwa
-            (((host.write 24 32).write 24 32).write 24 10) hf
+            (((host.write 24 32).write 24 32).write 24 10)
           refine ⟨finalVM, ?_⟩
           rw [he, hp, hfill, hn, ha, hrun]
           simp only [write_overwrite, rows_succ, line, hspace, hlength, hwidth,
             out_append, out_newline, bind_assoc, pure_bind]
 
-    have boot_step (h : Nat) (ram : Word → Byte) (hc : Code (rom h) 52 ram)
-        (host : Uxn.Host.State) (hf : host.fuel = none) :
+    have boot_step (after : ReturnTo) (h : Nat) (ram : Word → Byte) (hc : Code (rom h) 52 ram)
+        (host : Uxn.Host.State) :
         ∃ w r,
-          evalLoop (.next (machine ram 0x100 Stack.empty Stack.empty)) host =
-            evalLoop (.next (vm ram 0x10a 1 w r)) host ∧
+          evaluate after (machine ram 0x100 Stack.empty Stack.empty) host =
+            evaluate after (vm ram 0x10a 1 w r) host ∧
           w 0 = BitVec.ofNat 8 h - 1 ∧ masks r := by
       refine ⟨?_, ?_, ?_, ?_, ?_⟩
       rotate_left 2
-      · symbolic_steps 4 hf [narrow_add, vm, Code.read hc, rom, UInt8.toBitVec_ofNat']
-        simp [vm, machine]
+      · symbolic_steps 4 [narrow_add, vm, Code.read hc, rom, UInt8.toBitVec_ofNat']
+        simp [evaluate, vm, machine]
         rfl
       · simp [BitVec.sub_eq_add_neg]
       · simp [masks]
@@ -373,23 +371,23 @@ theorem correct (k : Nat) (hk : k < 8) :
     let ram := (initialState (rom h)).vm.mem.ram
     have hc : Code (rom h) 52 ram := Code.initial (rom h) 52 (by change 52 ≤ (rom h).data.size; simp [rom]) (by decide)
     let host : Uxn.Host.State := { vm := machine ram 0x100 Stack.empty Stack.empty }
-    obtain ⟨w, r, hboot, hw, hr⟩ := boot_step h ram hc host rfl
+    obtain ⟨w, r, hboot, hw, hr⟩ := boot_step (.arguments []) h ram hc host
     have hsub : BitVec.ofNat 8 h - 1 = BitVec.ofNat 8 (h - 1) := by bv_omega
     rw [hsub] at hw
-    obtain ⟨finalVM, hrun⟩ := row_loop h ram hc 0 h hpos (by omega) hfit w r hr hw host rfl
+    obtain ⟨finalVM, hrun⟩ := row_loop (.arguments []) h ram hc 0 h hpos (by omega) hfit w r hr hw host
     let final : Uxn.Host.State := { host.write 24 10 with vm := finalVM }
     have hboot' :
-        evalLoop (.next (machine ram 0x100 Stack.empty Stack.empty)) host =
-          (do out (rows h 0 h); pure ((), final)) := by
+        evaluate (.arguments []) (machine ram 0x100 Stack.empty Stack.empty) host =
+          (do out (rows h 0 h); finish (.arguments []) final) := by
       rw [hboot, hrun]
     have hv : final.consoleVector = 0#16 := rfl
     have hh : final.read 0x0f#8 = 0#8 := by
       simp [final, host, Uxn.Host.State.read, Uxn.Host.State.write,
         Vector.get, Fin.cast, Array.getElem_set]
-    refine ⟨final, ?_⟩
-    apply run_of_evalLoop (rom h) final _ ?_ hv hh
-    rw [← initial_shape (rom h)]
-    exact hboot'
+    obtain ⟨hrun, hexit⟩ := run_of_evaluate (rom h) final _ (by
+      rw [← initial_shape (rom h)]
+      exact hboot') hv hh
+    exact ⟨{final with control := .console .done, fuel := none}, hrun, hexit⟩
 
   -- Lucas's theorem: n.choose j is odd exactly when every set bit of j is set in n.
   -- Below 2 ^ k, height - n - 1 is n's k-bit complement, exactly the ROM's mask.
@@ -461,8 +459,8 @@ theorem correct (k : Nat) (hk : k < 8) :
     induction xs with
     | nil => rfl
     | cons x xs ih => simp [List.forM_cons, ih]
-  obtain ⟨final, hrun⟩ := run_triangle (2 ^ k) (Nat.two_pow_pos k) hfit
-  refine ⟨final, ?_⟩
+  obtain ⟨final, hrun, hexit⟩ := run_triangle (2 ^ k) (Nat.two_pow_pos k) hfit
+  refine ⟨final, ?_, hexit⟩
   rw [hrun, rows_pascal k hk]
   dsimp only [out]
   rw [List.forM_eq_forM, forM_eq_loop]

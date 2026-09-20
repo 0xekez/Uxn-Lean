@@ -9,13 +9,11 @@ private theorem deo_consoleVectorLow (mem : Memory) (value : Byte) :
       modify fun s => { s with consoleVector := s.read 0x10 ++ value }
       return {}) := rfl
 
-/-- Reduce state operations while leaving IO actions opaque. -/
-scoped macro "state_reduce" : tactic => `(tactic| (
-  all_goals try simp [uxn_state]))
-
 /-- Unfold one host iteration and symbolically execute its VM instruction. -/
 scoped macro "host_step" "[" facts:term,* "]" : tactic => `(tactic| (
-  rw [Uxn.Host.evalLoop.eq_def]
+  all_goals try simp only [evaluate, Uxn.Host.State.write]
+  rw [run_next]
+  all_goals try simp only [Uxn.Host.State.next]
   all_goals try simp [uxn_state, Uxn.Host.step]
   all_goals try conv =>
     pattern Uxn.step _

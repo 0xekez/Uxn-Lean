@@ -14,14 +14,21 @@ def deviceRam (ram : Word → Byte) (port value : Byte) : Word → Byte :=
   let shadow := Function.update ram (0x759 + port.setWidth 16) value
   if port = 0x11 then Function.update (Function.update shadow 0x175 (shadow 0x769)) 0x176 value else shadow
 
+/-- Only these guest device outputs are forwarded to the outer host. -/
+def nativeHost (host : Uxn.Host.State) (port value : Byte) : Uxn.Host.State :=
+  if port = 0x0e ∨ port = 0x0f ∨ port = 0x18 ∨ port = 0x19 then
+    deviceHost host port value
+  else host
+
 /-- The native output helper has exactly one host action, surrounded by pure VM steps. -/
 theorem device_write_helper (ram : Word → Byte) (code : CodeImage ram)
-    (port value : Byte) (working returning : Uxn.Stack) (returnAddress : Word) (host : Uxn.Host.State)
+    (port value : Byte) (working returning : Uxn.Stack) (returnAddress : Word)
     (workingSpace : working.ptr.toNat ≤ 248) (returnSpace : returning.ptr.toNat ≤ 253) :
-    ∃ stage resume final finalHost,
+    ∃ stage resume final,
       Reaches (machine ram 0x1af (Stack.push (Stack.push working value) port)
         (Stack.pushWord returning returnAddress)) stage ∧
-      Uxn.Host.step stage host = (do deviceOutput port value; pure (.next resume, finalHost)) ∧
+      (∀ host, Uxn.Host.step stage host =
+        (do deviceOutput port value; pure (.next resume, nativeHost host port value))) ∧
       Reaches resume final ∧
       final.pc = returnAddress ∧ final.mem.ram = deviceRam ram port value ∧
       final.mem.wstk.ptr = working.ptr ∧ final.mem.rstk.ptr = returning.ptr ∧
@@ -68,7 +75,7 @@ theorem device_write_helper (ram : Word → Byte) (code : CodeImage ram)
       all_goals rw [routePC]; exact routedCode _ (by decide) (by decide) (by simp [MutableCode])
     let resume : Uxn.State := {routed with pc := routed.pc + 1, mem.wstk.ptr := working.ptr}
     let final : Uxn.State := {resume with pc := returnAddress, mem.rstk.ptr := returning.ptr}
-    have action : Uxn.Host.step routed host = (do deviceOutput port value; pure (.next resume, deviceHost host port value)) := by
+    have action (host : Uxn.Host.State) : Uxn.Host.step routed host = (do deviceOutput port value; pure (.next resume, deviceHost host port value)) := by
       have native := device_output_step routed.mem.ram routed.pc opcode port value
         {routed.mem.wstk with ptr := working.ptr} routed.mem.rstk host (by
           rcases external with rfl | rfl | rfl | rfl <;> change ¬(0xa0#8 ≤ _ ∧ _ < 0xc0#8) <;> decide)
@@ -77,7 +84,9 @@ theorem device_write_helper (ram : Word → Byte) (code : CodeImage ram)
       have native := device_output_return routed.mem.ram (routed.pc + 1) returnCode
         {routed.mem.wstk with ptr := working.ptr} returning returnAddress
       simpa only [← routedReturning, machine] using native
-    refine ⟨routed, resume, final, deviceHost host port value, before, action, .next returnStep (.refl _), rfl, ?_, rfl, rfl, routedFrame, ?_⟩
+    refine ⟨routed, resume, final, before, ?_, .next returnStep (.refl _), rfl, ?_, rfl, rfl, routedFrame, ?_⟩
+    · intro host
+      simpa only [nativeHost, if_pos external] using action host
     · change routed.mem.ram = _
       rw [routeRAM, shadowRAM]
       simp only [deviceRam, if_neg notVector]
@@ -134,8 +143,9 @@ theorem device_write_helper (ram : Word → Byte) (code : CodeImage ram)
     cases tail with
     | refl => have impossible : working.ptr + 2#8 = working.ptr := routeWP.symm.trans finalWP; bv_omega
     | @next _ resume _ step rest =>
-      refine ⟨routed, resume, final, host, before, ?_, rest, finalPC, finalRAM, finalWP, finalRP, finalWF, finalRF⟩
-      simp only [Uxn.Host.step, step, pureOutput]
+      refine ⟨routed, resume, final, before, ?_, rest, finalPC, finalRAM, finalWP, finalRP, finalWF, finalRF⟩
+      intro host
+      simp only [Uxn.Host.step, step, pureOutput, nativeHost, if_neg external]
       rfl
 
 end ProgramProofs.Uxnmin

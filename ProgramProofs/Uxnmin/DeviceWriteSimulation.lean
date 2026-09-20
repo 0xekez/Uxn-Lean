@@ -13,7 +13,7 @@ namespace ProgramProofs.Uxnmin
 open Uxn Uxn.Host ProgramProofs.Host
 
 /-- Every supported DEO mode returns to a represented guest boundary with the same IO action. -/
-theorem device_write_simulation {guest outer : Uxn.State} (guestHost outerHost : Uxn.Host.State)
+theorem device_write_simulation {guest outer : Uxn.State} (guestHost : Uxn.Host.State)
     (boundary : EvaluationBoundary guest outer) (devices : DeviceImage guestHost outer)
     (confined : guest.pc.toNat < ramSize)
     (opcode : guest.mem.ram guest.pc &&& 0x1f = 0x17) :
@@ -26,12 +26,13 @@ theorem device_write_simulation {guest outer : Uxn.State} (guestHost outerHost :
     let outputPort := port + (if short then 1 else 0)
     port ≠ Port.Console.read → port ≠ Port.Console.type →
     outputPort ≠ Port.Console.read → outputPort ≠ Port.Console.type → outputPort ∉ Port.File.ports →
-    ∃ stage resume final finalHost,
+    ∃ stage resume final,
       Uxn.Host.step guest guestHost = (do
         deviceOutput outputPort low
         pure (.next (deviceWriteNext guest ret short kept), deviceWriteHost guest guestHost ret short)) ∧
       Reaches outer stage ∧
-      Uxn.Host.step stage outerHost = (do deviceOutput outputPort low; pure (.next resume, finalHost)) ∧
+      (∀ outerHost, Uxn.Host.step stage outerHost =
+        (do deviceOutput outputPort low; pure (.next resume, nativeHost outerHost outputPort low))) ∧
       Reaches resume final ∧ EvaluationBoundary (deviceWriteNext guest ret short kept) final ∧
       DeviceImage (deviceWriteHost guest guestHost ret short) final ∧
       final.mem.rstk.ptr = outer.mem.rstk.ptr ∧
@@ -81,11 +82,11 @@ theorem device_write_simulation {guest outer : Uxn.State} (guestHost outerHost :
   have pair : Stack.push (Stack.push {handled.mem.wstk with ptr := dispatched.mem.wstk.ptr} low) outputPort = handled.mem.wstk := by
     simpa [handlerWP, BitVec.sub_eq_add_neg, BitVec.add_assoc, handlerValue, handlerPort,
       outputPort, Stack.pushWord, byteHigh, byteLow] using Stack.asPushWord handled.mem.wstk
-  obtain ⟨stage, resume, pushed, finalHost, helperBefore, action, helperAfter, helperPC, helperRAM,
+  obtain ⟨stage, resume, pushed, helperBefore, action, helperAfter, helperPC, helperRAM,
     helperWP, helperRP, helperWF, helperRF⟩ :=
     device_write_helper handled.mem.ram handlerCode outputPort low
       {handled.mem.wstk with ptr := dispatched.mem.wstk.ptr}
-      {handled.mem.rstk with ptr := outer.mem.rstk.ptr} 0x170 outerHost
+      {handled.mem.rstk with ptr := outer.mem.rstk.ptr} 0x170
       (by simp [working]) (by have := boundary.returnSpace; dsimp; omega)
   have before : Reaches outer stage := by
     apply beforeHandler.trans
@@ -114,13 +115,15 @@ theorem device_write_simulation {guest outer : Uxn.State} (guestHost outerHost :
     exact (prepare.deviceRam outputPort low).transport helperRAM
   have dispatchedDevices : DeviceImage guestHost dispatched := by
     constructor
-    · intro address
+    · intro address readPort typePort
       rw [headerMemory _ (by
         simp only [PopScratch, List.mem_cons, List.not_mem_nil, or_false, not_or]
         repeat' constructor <;> bv_omega)]
-      exact devices.ports address
+      exact devices.ports address readPort typePort
     · rw [headerMemory _ (by simp [PopScratch])]; exact devices.consoleRead
     · rw [headerMemory _ (by simp [PopScratch])]; exact devices.consoleType
+    · rw [headerMemory _ (by simp [PopScratch]), headerMemory _ (by simp [PopScratch])]
+      exact devices.vector
   have finalDevices : DeviceImage (deviceWriteHost guest guestHost ret short) pushed := by
     have popped := dispatchedDevices.writeStack _ (stack.ptr - 1 - (if short then 2 else 1)) cursorLower cursorUpper
     cases modeEq : short
@@ -140,7 +143,7 @@ theorem device_write_simulation {guest outer : Uxn.State} (guestHost outerHost :
       rw [pushedTop]
       intro zero
       simp [zero] at opcode)
-  refine ⟨stage, resume, final, finalHost, guest_device_write guest guestHost opcode supported,
+  refine ⟨stage, resume, final, guest_device_write guest guestHost opcode supported,
     before, action, helperAfter.trans (.next loop (.refl _)), ⟨represented.transport rfl, rfl, rfl, ?_⟩,
     finalDevices.transport rfl, helperRP, ?_⟩
   · change pushed.mem.rstk.ptr.toNat ≤ 245

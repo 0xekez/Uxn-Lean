@@ -1,42 +1,30 @@
-import ProgramProofs.Uxnmin.Semantics
-import ProgramProofs.Host.Reduction
-import ProgramProofs.Host.IO
-import Mathlib.Tactic.Conv
+import ProgramProofs.Uxnmin.Loader.Tactics
 
 set_option linter.unusedSimpArgs false
-set_option maxRecDepth 30000
+set_option maxRecDepth 10000
 set_option maxHeartbeats 1000000
 set_option backward.isDefEq.respectTransparency false
-
-namespace ProgramProofs.Uxnmin
+namespace ProgramProofs.Uxnmin.Model
 open Uxn Uxn.Host ProgramProofs.Host
 
-/-- The argument terminator prepares File/name, File/length, and the destination. -/
-theorem load_prefix_continue (ram : Word → Byte) (hc : Code rom rom.size ram)
-    (index : Byte) (w r : Byte → Byte) (host : Uxn.Host.State) (fuel : Nat)
+/-- The filename terminator prepares the file transfer without performing IO. -/
+theorem loader_prefix (ram : Word → Byte) (hc : Code rom rom.size ram)
+    (index : Byte) (w r : Byte → Byte) (host : Uxn.Host.State)
     (kind : host.read 0x17#8 = 4#8) :
-    ∃ vm : Uxn.State, ∃ final : Uxn.Host.State,
-      evalLoop (.next (machine (Function.update ram 0x13e index) 0x118 ⟨w, 0⟩ ⟨r, 0⟩))
-        { host with fuel := some (fuel + 14) } = evalLoop (.next vm) final ∧
-      final.fuel = some fuel ∧ final.read 0x0f = host.read 0x0f ∧ vm.pc = 0x135 ∧
+    ∃ final : Uxn.Host.State,
+      PureReaches {host with
+        vm := machine (Function.update ram 0x13e index) 0x118 ⟨w, 0⟩ ⟨r, 0⟩,
+        control := .evaluating (.console .input)} final ∧
+      final.control = .evaluating (.console .input) ∧
+      final.read 0x0f = host.read 0x0f ∧ final.consoleVector = host.consoleVector ∧
+      final.vm.pc = 0x135 ∧
       final.file.name = some 0 ∧ final.file.length = 0xf6a7 ∧ final.file.handle = none ∧
-      vm.mem.ram = Function.update ram 0x13e index ∧
-      vm.mem.wstk.ptr = 3 ∧ vm.mem.rstk.ptr = 0 ∧
-      vm.mem.wstk.data 0 = 0x09 ∧ vm.mem.wstk.data 1 = 0x59 ∧
-      vm.mem.wstk.data 2 = 0xac := by
+      final.vm.mem.ram = Function.update ram 0x13e index ∧
+      final.vm.mem.wstk.ptr = 3 ∧ final.vm.mem.rstk.ptr = 0 ∧
+      final.vm.mem.wstk.data 0 = 0x09 ∧ final.vm.mem.wstk.data 1 = 0x59 ∧
+      final.vm.mem.wstk.data 2 = 0xac := by
   have read_eq (host : Uxn.Host.State) (port : Byte) :
       host.read port = host.ports[port.toNat] := rfl
-  have deo_name (mem : Memory) (value : Byte) :
-      deo mem 0xa9#8 value = (do
-        modify (·.write 0xa9 value)
-        modify fun host => { host.writeWord Port.File.success 0 with
-          file := { host.file with name := some (host.readWord Port.File.name), handle := none } }
-        return {}) := rfl
-  have deo_length (mem : Memory) (value : Byte) :
-      deo mem 0xab#8 value = (do
-        modify (·.write 0xab value)
-        modify fun host => { host with file.length := host.readWord Port.File.length }
-        return {}) := rfl
   rw [read_eq] at kind
   simp at kind
   have h24 : ram 0x118#16 = 0xa0#8 := hc ⟨24, by decide⟩
@@ -68,25 +56,8 @@ theorem load_prefix_continue (ram : Word → Byte) (hc : Code rom rom.size ram)
   have h50 : ram 0x132#16 = 0x59#8 := hc ⟨50, by decide⟩
   have h51 : ram 0x133#16 = 0x80#8 := hc ⟨51, by decide⟩
   have h52 : ram 0x134#16 = 0xac#8 := hc ⟨52, by decide⟩
-  iterate 14
-    rw [evalLoop.eq_def]
-    simp [uxn_state, Uxn.Host.step]
-    conv =>
-      pattern Uxn.step _
-      simp only [machine, Uxn.step, stepM, fetchInstruction, fetchByte,
-        StateT.run, Bind.bind, StateT.bind, modifyGet, MonadStateOf.modifyGet,
-        StateT.modifyGet, Pure.pure, StateT.pure]
-      simp [h24, h25, h26, h27, h28, h29, h30, h31, h32, h33, h34, h35, h36, h37, h38, h39, h40, h41, h42, h43, h44, h45, h46, h47, h48, h49, h50, h51, h52, Function.update_apply]
-      dsimp [Uxn.Instruction.ofByte]
-      simp [uxn_state, uxn_step, h24, h25, h26, h27, h28, h29, h30, h31, h32, h33, h34, h35, h36, h37, h38, h39, h40, h41, h42, h43, h44, h45, h46, h47, h48, h49, h50, h51, h52, Function.update_apply, kind]
-    try dsimp [Request.Result]
-    simp [respond, uxn_state]
-    try rw [deo_name]
-    try rw [deo_length]
-    try simp [uxn_state, read_eq, kind, Host.State.write, Host.State.readWord, Host.State.writeWord,
-      Patch.apply, Function.update_apply, BitVec.sub_eq_add_neg, BitVec.add_assoc,
-      Port.File.success, Port.File.name, Port.File.length, Vector.getElem_set]
-  refine ⟨_, _, rfl, ?_⟩
-  simp [read_eq, Vector.getElem_set]
+  host_steps 14 [h24, h25, h26, h27, h28, h29, h30, h31, h32, h33, h34, h35, h36, h37, h38, h39, h40, h41, h42, h43, h44, h45, h46, h47, h48, h49, h50, h51, h52, Function.update_apply, kind]
+  refine ⟨_, .refl _, ?_⟩
+  simp [host_read, Vector.getElem_set]
 
-end ProgramProofs.Uxnmin
+end ProgramProofs.Uxnmin.Model

@@ -2,7 +2,7 @@ import ProgramProofs.Uxnmin.DeviceReadHandler
 import ProgramProofs.Uxnmin.GuestDeviceRead
 import ProgramProofs.Uxnmin.Header
 import ProgramProofs.Uxnmin.Return
-import ProgramProofs.Uxnmin.Boundary
+import ProgramProofs.Uxnmin.DeviceImage
 import ProgramProofs.Uxnmin.RepresentationStack
 
 set_option maxRecDepth 8192
@@ -73,16 +73,18 @@ theorem device_read_byte_simulation {guest outer : Uxn.State} (host : Uxn.Host.S
     have kind : dispatched.mem.ram 0x1a4 = host.read Uxn.Host.Port.Console.type := by
       rw [headerMemory _ (by simp [PopScratch])]
       exact devices.consoleType
-    have shadow : dispatched.mem.ram (0x759 + port.setWidth 16) = host.read port := by
+    have shadow (readPort : port ≠ Uxn.Host.Port.Console.read)
+        (typePort : port ≠ Uxn.Host.Port.Console.type) :
+        dispatched.mem.ram (0x759 + port.setWidth 16) = host.read port := by
       rw [headerMemory _ (by
         simp only [PopScratch, List.mem_cons, List.not_mem_nil, or_false, not_or]
         repeat' constructor <;> bv_omega)]
-      exact devices.ports port
+      exact devices.ports port readPort typePort
     split <;> rename_i special
     · subst port; exact input
     · split <;> rename_i special'
       · subst port; exact kind
-      · exact shadow
+      · exact shadow special special'
   have portValue := rep.stackData ((guest.mem.ram guest.pc).getLsbD 6)
     ((guestStack guest ((guest.mem.ram guest.pc).getLsbD 6)).ptr - 1#8)
   simp only [guestStack_pc] at portValue

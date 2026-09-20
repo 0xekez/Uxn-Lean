@@ -2,7 +2,7 @@ import ProgramProofs.Uxnmin.DeviceReadHandlerWord
 import ProgramProofs.Uxnmin.GuestDeviceRead
 import ProgramProofs.Uxnmin.Header
 import ProgramProofs.Uxnmin.Return
-import ProgramProofs.Uxnmin.Boundary
+import ProgramProofs.Uxnmin.DeviceImage
 import ProgramProofs.Uxnmin.RepresentationStack
 
 set_option maxRecDepth 8192
@@ -17,13 +17,18 @@ theorem device_read_word_simulation {guest outer : Uxn.State} (host : Uxn.Host.S
     (boundary : EvaluationBoundary guest outer) (devices : DeviceImage host outer)
     (confined : guest.pc.toNat < ramSize)
     (opcode : guest.mem.ram guest.pc &&& 0x1f = 0x16)
-    (wordMode : (guest.mem.ram guest.pc).getLsbD 5 = true) :
+    (wordMode : (guest.mem.ram guest.pc).getLsbD 5 = true)
+    (lowInput : (guestStack guest ((guest.mem.ram guest.pc).getLsbD 6)).data
+      ((guestStack guest ((guest.mem.ram guest.pc).getLsbD 6)).ptr - 1) + 1 ≠ Uxn.Host.Port.Console.read)
+    (lowType : (guestStack guest ((guest.mem.ram guest.pc).getLsbD 6)).data
+      ((guestStack guest ((guest.mem.ram guest.pc).getLsbD 6)).ptr - 1) + 1 ≠ Uxn.Host.Port.Console.type) :
     ∃ guest' final, Uxn.Host.step guest host = pure (.next guest', host) ∧ Reaches outer final ∧
       EvaluationBoundary guest' final ∧ outer ≠ final ∧
       (∀ address, ¬ StackScratch address → final.mem.ram address = outer.mem.ram address) ∧
       final.mem.rstk.ptr = outer.mem.rstk.ptr ∧
       (∀ index : Byte, index.toNat < outer.mem.rstk.ptr.toNat →
         final.mem.rstk.data index = outer.mem.rstk.data index) := by
+  simp only [BitVec.ofNat_eq_ofNat] at lowInput lowType
   obtain ⟨dispatched, headerRun, rep, working, top, returnShape, returnFrame,
     short, keep, sourceHigh, sourceLow, cursor, pc, headerMemory⟩ := instruction_header boundary confined
   have tableHigh : outer.mem.ram 0x541#16 = 0x04#8 := boundary.code _ (by decide) (by decide) (by simp [MutableCode])
@@ -73,21 +78,24 @@ theorem device_read_word_simulation {guest outer : Uxn.State} (host : Uxn.Host.S
     have kind : dispatched.mem.ram 0x1a4 = host.read Uxn.Host.Port.Console.type := by
       rw [headerMemory _ (by simp [PopScratch])]
       exact devices.consoleType
-    have shadow : dispatched.mem.ram (0x759 + port.setWidth 16) = host.read port := by
+    have shadow (readPort : port ≠ Uxn.Host.Port.Console.read)
+        (typePort : port ≠ Uxn.Host.Port.Console.type) :
+        dispatched.mem.ram (0x759 + port.setWidth 16) = host.read port := by
       rw [headerMemory _ (by
         simp only [PopScratch, List.mem_cons, List.not_mem_nil, or_false, not_or]
         repeat' constructor <;> bv_omega)]
-      exact devices.ports port
+      exact devices.ports port readPort typePort
     split <;> rename_i special
     · subst port; exact input
     · split <;> rename_i special'
       · subst port; exact kind
-      · exact shadow
-  have shadowValue (port : Byte) : dispatched.mem.ram (0x759 + port.setWidth 16) = host.read port := by
+      · exact shadow special special'
+  have shadowValue (port : Byte) (readPort : port ≠ Uxn.Host.Port.Console.read)
+      (typePort : port ≠ Uxn.Host.Port.Console.type) : dispatched.mem.ram (0x759 + port.setWidth 16) = host.read port := by
     rw [headerMemory _ (by
       simp only [PopScratch, List.mem_cons, List.not_mem_nil, or_false, not_or]
       repeat' constructor <;> bv_omega)]
-    exact devices.ports port
+    exact devices.ports port readPort typePort
   have portValue := rep.stackData ((guest.mem.ram guest.pc).getLsbD 6)
     ((guestStack guest ((guest.mem.ram guest.pc).getLsbD 6)).ptr - 1#8)
   simp only [guestStack_pc] at portValue
@@ -106,7 +114,7 @@ theorem device_read_word_simulation {guest outer : Uxn.State} (host : Uxn.Host.S
     have byteLow (a b : Byte) : (a ++ b).setWidth 8 = b := BitVec.setWidth_append_eq_right
     have transported := result.transport (replacement := final) (by
       change pushed.mem.ram = _
-      rw [handlerMemory, portValue, readValue, shadowValue]
+      rw [handlerMemory, portValue, readValue, shadowValue _ lowInput lowType]
       cases hr : (guest.mem.ram guest.pc).getLsbD 6 <;> cases hk : (guest.mem.ram guest.pc).getLsbD 7 <;>
         simp [popStack, guestStack, pushStack, Stack.push, BitVec.add_assoc])
     change Represents (deviceReadNext guest host _ true _) final

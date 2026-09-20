@@ -1,6 +1,6 @@
 import ProgramProofs.Uxnmin.Embedding
 import ProgramProofs.Uxnmin.Code
-import ProgramProofs.Host.Execution
+import ProgramProofs.Host.Reaches
 
 set_option maxHeartbeats 2000000
 set_option maxRecDepth 8192

@@ -1,10 +1,10 @@
-import ProgramProofs.Uxnmin.Loader.Filename
+import ProgramProofs.Uxnmin.Loader.NameBytes
 import ProgramProofs.Uxnmin.Loader.FilenameDecode
 
 set_option maxRecDepth 4000
 set_option maxHeartbeats 1000000
 set_option backward.isDefEq.respectTransparency false
-open private ProgramProofs.Uxnmin.writeName from ProgramProofs.Uxnmin.Loader.Filename
+open private ProgramProofs.Uxnmin.writeName from ProgramProofs.Uxnmin.Loader.NameBytes
 open private Uxn.Host.fileName from Uxn.Host
 
 namespace ProgramProofs.Uxnmin

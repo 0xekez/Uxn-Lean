@@ -1,4 +1,4 @@
-import ProgramProofs.Uxnmin.Semantics
+import ProgramProofs.Uxnmin.Rom
 import ProgramProofs.Host.Reduction
 import Init.Data.Range.Lemmas
 

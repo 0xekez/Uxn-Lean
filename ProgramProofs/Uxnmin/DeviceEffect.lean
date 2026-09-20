@@ -1,5 +1,6 @@
-import ProgramProofs.Host.Host
-import ProgramProofs.Uxnmin.Semantics
+import ProgramProofs.Host.Reduction
+import ProgramProofs.Host.IO
+import ProgramProofs.Uxnmin.Rom
 
 set_option maxRecDepth 8192
 set_option maxHeartbeats 1000000

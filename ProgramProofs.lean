@@ -9,8 +9,8 @@ run_cmd do
   for name in [``ProgramProofs.Fibonacci.correct,
       ``ProgramProofs.HelloWorld.correct,
       ``ProgramProofs.Sierpinski.correct,
-      ``ProgramProofs.Uxnmin.correct] do
+      ``ProgramProofs.Uxnmin.correct,
+      ``ProgramProofs.Uxnmin.correct_file] do
     for axiomName in ← Lean.collectAxioms name do
       unless [``propext, ``Classical.choice, ``Quot.sound].contains axiomName do
         throwError "{name} depends on unexpected axiom {axiomName}"
-

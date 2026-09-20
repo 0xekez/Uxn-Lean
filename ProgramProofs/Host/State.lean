@@ -15,6 +15,6 @@ def machine (ram : Word → Byte) (pc : Word) (w r : Uxn.Stack) : Uxn.State :=
 theorem initial_shape (source : ByteArray) :
     ({ vm := machine (initialState source).vm.mem.ram 0x100 Stack.empty Stack.empty } :
       Uxn.Host.State) = initialState source := by
-  simp only [machine, Stack.empty, initialState, BitVec.ofNat_eq_ofNat]
+  simp [machine, Stack.empty, initialState, Uxn.Host.State.write, Vector.set_replicate_self]
 
 end ProgramProofs.Host

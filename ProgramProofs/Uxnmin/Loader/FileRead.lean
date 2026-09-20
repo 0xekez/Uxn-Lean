@@ -1,4 +1,4 @@
-import ProgramProofs.Uxnmin.Semantics
+import ProgramProofs.Uxnmin.Rom
 import ProgramProofs.Host.Reduction
 import ProgramProofs.Host.IO
 
@@ -23,7 +23,7 @@ theorem file_read_success (mem : Memory) (filename : String) (program : ByteArra
       Uxn.Host.readFile mem host before =
         .ok ({ ramWrites := program.data.toList.zipIdx |>.map fun (byte, i) =>
           (0x0959 + BitVec.ofNat 16 i, byte.toBitVec) }, final) after ∧
-      final.vm = host.vm ∧ final.fuel = host.fuel ∧
+      final.vm = host.vm ∧ final.control = host.control ∧ final.fuel = host.fuel ∧
       final.consoleVector = host.consoleVector ∧
       final.file.name = some 0 ∧ final.file.length = 0xf6a7 ∧
       final.read 0x0f = host.read 0x0f := by

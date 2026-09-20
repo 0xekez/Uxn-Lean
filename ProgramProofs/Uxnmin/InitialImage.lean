@@ -73,9 +73,9 @@ theorem loaded_representation (program : ByteArray) (input outer : Uxn.State)
     · cases ret <;> decide
     · cases ret <;> decide
   · rw [memory]
-    simp [initialState]
+    simp [initialState, Uxn.Host.State.write]
   · rw [memory]
-    simp [initialState]
+    simp [initialState, Uxn.Host.State.write]
 
 /-- The same load leaves the zeroed shadow devices and input literals intact. -/
 theorem loaded_devices (program : ByteArray) (input outer : Uxn.State)
@@ -98,9 +98,9 @@ theorem loaded_devices (program : ByteArray) (input outer : Uxn.State)
   refine ⟨?_, ?_, ?_⟩
   · intro port
     rw [unchanged _ (by bv_omega) (by bv_omega) (by bv_omega), empty _ (by bv_omega)]
-    simp [initialState, Uxn.Host.State.read, Vector.get]
+    simp [initialState, Uxn.Host.State.write, Uxn.Host.State.read, Vector.get]
   · rw [unchanged _ (by decide) (by decide) (by decide), consoleRead]
-    simp [initialState, Uxn.Host.State.read, Vector.get]
+    simp [initialState, Uxn.Host.State.write, Uxn.Host.State.read, Vector.get]
   · rw [unchanged _ (by decide) (by decide) (by decide), consoleType]
     rfl
 

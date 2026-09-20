@@ -21,6 +21,7 @@ ROOT = HERE.parent
 EXAMPLES = ROOT / "examples"
 SELFHOST = ROOT / "ProgramProofs/Uxnmin"
 WORKER = ROOT / ".lake/build/bin/test-worker"
+CLI = ROOT / ".lake/build/bin/uxn"
 MASK = (1 << 64) - 1
 GAMMA = 0x9e3779b97f4a7c15
 # UXNDIFF1 is also written by Worker.lean and reference.c.
@@ -172,11 +173,14 @@ def corpus(reference, manifest, cases, timeout):
         rom = Path(temp) / "program.rom"
         for case in cases:
             rom.write_bytes(case.rom)
-            result = process([reference, rom, *case.args], case.data, temp, timeout)
-            same(result.problem, "", case.name)
-            golden(result, case.expected, case.name)
+            # Keep complete CLI runs short; longer Lean runs have instruction
+            # budgets in the differential campaign below.
+            for executable in ((reference, CLI) if case.fuel <= 100000 else (reference,)):
+                result = process([executable, rom, *case.args], case.data, temp, timeout)
+                same(result.problem, "", case.name)
+                golden(result, case.expected, f"{executable.name}: {case.name}")
     print(f"PASS corpus: {len(manifest['programs'])} example ROM rebuilds + self-hosted ROM, "
-          f"{len(cases)} expected outputs", flush=True)
+          f"{len(cases)} C / {sum(c.fuel <= 100000 for c in cases)} CLI expected outputs", flush=True)
 
 
 def golden(result, expected, label):
@@ -289,6 +293,28 @@ def unit_tests(base, timeout):
     with (directory / "sparse").open("wb") as file:
         file.truncate(1 << 32)
     print(process([WORKER, "--unit"], cwd=directory, timeout=timeout, check=True).stdout.decode().strip(), flush=True)
+
+
+def cli_tests(base, timeout):
+    directory = base / "cli"
+    directory.mkdir()
+    for args, stdout, stderr in [
+            ([], f"usage: {CLI} file.rom [args..]\n".encode(), b""),
+            (["missing.rom"], b"", f"{CLI}: missing.rom not found.\n".encode())]:
+        result = process([CLI, *args], cwd=directory, timeout=timeout)
+        same(result.problem, "", "CLI argument error")
+        golden(result, ((len(stdout) + len(stderr)) & 0xff, stdout, stderr), "CLI argument error")
+    rom = base / "echo.rom"
+    rom.write_bytes(next(c.rom for c in regressions() if c.name == "binary-input"))
+    for path in [rom, "../echo.rom"]:
+        result = process([CLI, path, "A", ""], b"\x00\xffZ", directory, timeout)
+        same(result.problem, "", "CLI path outside working directory")
+        golden(result, (0, b"A\n\n\x00\xffZ\n", b""), "CLI loading, arguments and binary stdin")
+    result = process([CLI, "."], cwd=directory, timeout=timeout)
+    same(result.problem, "", "CLI read error")
+    same(result.code != 0 and b"not found" not in result.stderr, True,
+         "CLI read failures must not be reported as open failures")
+    print("PASS CLI: usage, open/read errors, unrestricted ROM paths, arguments and binary stdin", flush=True)
 
 
 def file_examples(base, reference, timeout):
@@ -447,15 +473,19 @@ def main():
     parser.add_argument("--random-only", action="store_true", help="run only the random campaign")
     parser.add_argument("--replay", help="fixed case name or saved case.json (including old failures)")
     parser.add_argument("--extended", action="store_true", help="also run 16 slow nested-interpreter comparisons")
+    parser.add_argument("--skip-proofs", action="store_true", help="test runtime behavior without building ProgramProofs")
     config = parser.parse_args()
     if config.jobs == 0 or config.seed > MASK or config.fuel > MASK:
         parser.error("jobs must be positive; seed and fuel must fit in 64 bits")
     if sum([config.random_only, bool(config.replay), config.extended]) > 1:
         parser.error("--random-only, --replay, and --extended are mutually exclusive")
     routine = not (config.random_only or config.replay)
-    process(["lake", "build", "test-worker",
-             *(["uxn", "ProgramProofs", "ProgramProofs.Uxnmin.Rom"] if routine else [])],
-            cwd=ROOT, timeout=None, check=True)
+    targets = ["test-worker"]
+    if routine:
+        targets += ["uxn", "ProgramProofs.Uxnmin.Correctness"]
+        if not config.skip_proofs:
+            targets.append("ProgramProofs")
+    process(["lake", "build", *targets], cwd=ROOT, timeout=None, check=True)
     with tempfile.TemporaryDirectory(prefix="uxn-tests-") as temp:
         base = Path(temp)
         reference = base / "reference"
@@ -475,12 +505,15 @@ def main():
             manifest = json.loads((EXAMPLES / "manifest.json").read_text())
             fixed = examples(manifest)
             if routine:
-                print("PASS build: uxn, test worker, ProgramProofs, self-hosted ROM", flush=True)
+                print("PASS build: " + ", ".join(targets), flush=True)
+                if config.skip_proofs:
+                    print("SKIP ProgramProofs build (--skip-proofs)", flush=True)
                 corpus(reference, manifest, fixed, config.timeout_ms / 1000)
                 same(compare(next(c for c in fixed if c.name == "opctest"), reference, config),
                      False, "canon opcode test exhausted instruction budget (inconclusive)")
                 print("PASS canon opcode test: completed, output and full VM state match C", flush=True)
                 unit_tests(base, config.timeout_ms / 1000)
+                cli_tests(base, config.timeout_ms / 1000)
                 file_examples(base, reference, config.timeout_ms / 1000)
                 nested_console(base, reference, config.timeout_ms / 1000)
             fixed += regressions()

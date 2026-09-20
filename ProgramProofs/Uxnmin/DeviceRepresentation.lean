@@ -1,5 +1,5 @@
 import ProgramProofs.Uxnmin.DeviceWriteHelper
-import ProgramProofs.Uxnmin.Boundary
+import ProgramProofs.Uxnmin.DeviceImage
 
 set_option maxRecDepth 8192
 set_option maxHeartbeats 1000000
@@ -71,19 +71,23 @@ theorem DeviceImage.write {host : Uxn.Host.State} {outer : Uxn.State} (rep : Dev
     DeviceImage (host.write port value)
       {outer with mem.ram := Function.update outer.mem.ram (0x759 + port.setWidth 16) value} := by
   constructor
-  · intro address
+  · intro address readPort typePort
     change Function.update _ _ _ _ = _
     rw [host_write_read]
     by_cases same : address = port
     · subst address; simp
     · rw [if_neg same, Function.update_of_ne (by bv_omega)]
-      exact rep.ports address
+      exact rep.ports address readPort typePort
   · change Function.update _ _ _ _ = _
     rw [Function.update_of_ne (by bv_omega), host_write_read, if_neg (Ne.symm input)]
     exact rep.consoleRead
   · change Function.update _ _ _ _ = _
     rw [Function.update_of_ne (by bv_omega), host_write_read, if_neg (Ne.symm kind)]
     exact rep.consoleType
+  · change (Function.update outer.mem.ram _ _) (0x175#16) ++
+      (Function.update outer.mem.ram _ _) (0x176#16) = host.consoleVector
+    rw [Function.update_of_ne (by bv_omega), Function.update_of_ne (by bv_omega)]
+    exact rep.vector
 
 /-- The output helper's shadow and vector updates preserve the device image. -/
 theorem DeviceImage.deviceRam {host : Uxn.Host.State} {outer : Uxn.State} (rep : DeviceImage host outer)
@@ -93,14 +97,14 @@ theorem DeviceImage.deviceRam {host : Uxn.Host.State} {outer : Uxn.State} (rep :
   have sameRead (address : Byte) : (deviceHost host port value).read address = (host.write port value).read address := by
     rw [deviceHost_read, host_write_read]
   constructor
-  · intro address
+  · intro address readPort typePort
     rw [sameRead]
     change ProgramProofs.Uxnmin.deviceRam outer.mem.ram port value _ = _
     unfold ProgramProofs.Uxnmin.deviceRam
     split
     · rw [Function.update_of_ne (by bv_omega), Function.update_of_ne (by bv_omega)]
-      exact image.ports address
-    · exact image.ports address
+      exact image.ports address readPort typePort
+    · exact image.ports address readPort typePort
   · rw [sameRead]
     change ProgramProofs.Uxnmin.deviceRam outer.mem.ram port value _ = _
     unfold ProgramProofs.Uxnmin.deviceRam
@@ -118,28 +122,49 @@ theorem DeviceImage.deviceRam {host : Uxn.Host.State} {outer : Uxn.State} (rep :
       exact image.consoleType
     · exact image.consoleType
 
+  · change ProgramProofs.Uxnmin.deviceRam outer.mem.ram port value 0x175 ++
+      ProgramProofs.Uxnmin.deviceRam outer.mem.ram port value 0x176 = (deviceHost host port value).consoleVector
+    by_cases vector : port = 0x11
+    · subst port
+      have high := rep.ports 0x10 (by decide) (by decide)
+      have high' : outer.mem.ram 0x769 = host.ports[0x10] := high
+      simp only [BitVec.ofNat_eq_ofNat] at high'
+      simp [ProgramProofs.Uxnmin.deviceRam, deviceHost, Uxn.Host.State.read,
+        Uxn.Host.State.write, Vector.get,
+        Port.Console.vectorLow, Port.Console.vector, high', Vector.getElem_set, Array.getElem_set]
+      rfl
+    · have notVector : port ≠ Port.Console.vectorLow := vector
+      simp only [ProgramProofs.Uxnmin.deviceRam, if_neg vector, deviceHost, if_neg notVector]
+      rw [Function.update_of_ne (by bv_omega), Function.update_of_ne (by bv_omega)]
+      exact rep.vector
+
 
 /-- Device bytes survive changes to the interpreter's software-stack region. -/
 theorem DeviceImage.writeStack {host : Uxn.Host.State} {outer : Uxn.State} (rep : DeviceImage host outer)
     (address : Word) (value : Byte) (lower : 0x555 ≤ address.toNat) (upper : address.toNat < 0x759) :
     DeviceImage host {outer with mem.ram := Function.update outer.mem.ram address value} := by
   constructor
-  · intro port
+  · intro port readPort typePort
     change Function.update _ _ _ _ = _
     rw [Function.update_of_ne (by bv_omega)]
-    exact rep.ports port
+    exact rep.ports port readPort typePort
   · change Function.update _ _ _ _ = _
     rw [Function.update_of_ne (by bv_omega)]
     exact rep.consoleRead
   · change Function.update _ _ _ _ = _
     rw [Function.update_of_ne (by bv_omega)]
     exact rep.consoleType
+  · change (Function.update outer.mem.ram _ _) (0x175#16) ++
+      (Function.update outer.mem.ram _ _) (0x176#16) = host.consoleVector
+    rw [Function.update_of_ne (by bv_omega), Function.update_of_ne (by bv_omega)]
+    exact rep.vector
 
 theorem DeviceImage.transport {host : Uxn.Host.State} {outer replacement : Uxn.State}
     (rep : DeviceImage host outer) (ram : replacement.mem.ram = outer.mem.ram) : DeviceImage host replacement := by
   constructor
-  · intro port; rw [ram]; exact rep.ports port
+  · intro port readPort typePort; rw [ram]; exact rep.ports port readPort typePort
   · rw [ram]; exact rep.consoleRead
   · rw [ram]; exact rep.consoleType
+  · rw [ram]; exact rep.vector
 
 end ProgramProofs.Uxnmin

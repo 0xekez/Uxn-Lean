@@ -1,103 +1,82 @@
-import ProgramProofs.Uxnmin.Semantics
-import ProgramProofs.Host.Reduction
+import ProgramProofs.Uxnmin.Steps
 
-namespace ProgramProofs.Uxnmin
-open Semantics
-open Uxn Uxn.Host
+namespace ProgramProofs.Uxnmin.Model
+open Uxn Uxn.Host ProgramProofs.Host
 
-/-- Extensional confinement forces instruction fetches to stay in guest RAM. -/
-theorem Semantics.Confined.pc_lt {start : Configuration}
-    (confined : Confined start) (vm : Uxn.State) (host : Uxn.Host.State)
-    (world : Void IO.RealWorld) (reachable : Reachable start (.ok (.next vm, host) world)) :
-    vm.pc.toNat < ramSize := by
-  let stopped : Configuration → Bool
-    | .ok (.brk _, _) _ => true
-    | _ => false
-  have replacement (n : Nat) (ram : Word → Byte) (c : Configuration) :
-      stopped (replaceOutside n ram c) = stopped c := by
-    cases c with
-    | error => rfl
-    | ok pair world => cases pair with | mk outcome host => cases outcome <;> rfl
-  have brk (vm : Uxn.State) (host : Uxn.Host.State) (world : Void IO.RealWorld)
-      (opcode : vm.mem.ram vm.pc = 0) :
-      (next (.ok (.next vm, host) world)).map stopped = some true := by
-    simp [next, Uxn.Host.step, stopped, opcode, uxn_state, uxn_step]
-    rfl
-  have lit (vm : Uxn.State) (host : Uxn.Host.State) (world : Void IO.RealWorld)
-      (opcode : vm.mem.ram vm.pc = 0x80) :
-      (next (.ok (.next vm, host) world)).map stopped = some false := by
-    simp [next, Uxn.Host.step, stopped, opcode, uxn_state, uxn_step]
-    rfl
-  by_contra outside
-  have zero := congrArg (Option.map stopped) (confined _ reachable (fun _ => 0))
-  have nonzero := congrArg (Option.map stopped) (confined _ reachable (fun _ => 0x80))
-  simp only [Option.map_map, Function.comp_def, replacement] at zero nonzero
-  have zeroTag : (next (replaceOutside ramSize (fun _ => 0)
-      (.ok (.next vm, host) world))).map stopped = some true := by
-    apply brk
-    simp [replaceOutside.replace, outside]
-  have litTag : (next (replaceOutside ramSize (fun _ => 0x80)
-      (.ok (.next vm, host) world))).map stopped = some false := by
-    apply lit
-    simp [replaceOutside.replace, outside]
-  rw [zeroTag] at zero
-  rw [litTag] at nonzero
-  exact Bool.noConfusion (Option.some.inj (zero.trans nonzero.symm))
+/-- Confinement is inherited at any reachable configuration. -/
+theorem Confined.reachable {start state : Configuration} (confined : Confined start)
+    (reachable : Reachable start state) : Confined state :=
+  fun _ _ later => confined _ _ (reachable.trans later)
 
-/-- Confinement and device compatibility hold when execution resumes at a reachable state. -/
-theorem restrictions_reachable {start state : Configuration}
-    (reachable : Reachable start state) (confined : Confined start)
-    (compatible : CompatibleDevices start) :
-    Confined state ∧ CompatibleDevices state := by
-  exact ⟨fun _ tail => confined _ (reachable.trans tail),
-    fun vm host world tail => compatible vm host world (reachable.trans tail)⟩
+theorem CompatibleDevices.reachable {start state : Configuration}
+    (compatible : CompatibleDevices start) (reachable : Reachable start state) :
+    CompatibleDevices state :=
+  fun _ _ _ later => compatible _ _ _ (reachable.trans later)
 
-/-- Replacing outside memory twice keeps only the final replacement. -/
-theorem replaceOutside_replaceOutside (cutoff : Nat) (first last : Word → Byte)
-    (state : Configuration) :
-    replaceOutside cutoff last (replaceOutside cutoff first state) =
-      replaceOutside cutoff last state := by
-  have ram (vm : Uxn.State) :
-      replaceOutside.replace cutoff last (replaceOutside.replace cutoff first vm) =
-        replaceOutside.replace cutoff last vm := by
-    simp only [replaceOutside.replace]
-    congr 2
-    funext address
-    split <;> rfl
+/-- The replacement operation leaves all observations other than outside RAM alone. -/
+theorem replaceOutside_label (ram : Word → Byte) (state : Configuration)
+    (confined : Confined state) : label (replaceOutside ram state) = label state := by
   cases state with
-  | error => rfl
-  | ok pair world =>
-    rcases pair with ⟨outcome, host⟩
-    cases outcome <;> simp only [replaceOutside, ram]
+  | starting => rfl
+  | failed => rfl
+  | running state world =>
+    have h := confined state world .refl ram
+    simp only [label]
+    have terminal : (match replaceOutside ram (.running state world) with
+        | .running updated _ => updated.next.isNone
+        | _ => true) = state.next.isNone := by
+      have h := congrArg Option.isNone h
+      simpa [Configuration.next, replaceOutside] using h
+    simp only [replaceOutside] at terminal ⊢
+    rw [terminal]
+    rfl
 
-/-- A confined step preserves every RAM byte outside the guest's address space. -/
-theorem Semantics.Confined.outside_unchanged {start : Configuration}
-    (confined : Confined start) (vm : Uxn.State) (host : Uxn.Host.State)
-    (world : Void IO.RealWorld) (reachable : Reachable start (.ok (.next vm, host) world))
-    (outcome : Outcome) (host' : Uxn.Host.State) (world' : Void IO.RealWorld)
-    (step : next (.ok (.next vm, host) world) = some (.ok (outcome, host') world'))
-    (address : Word) (outside : ramSize ≤ address.toNat) :
-    (match outcome with | .next vm' | .brk vm' => vm'.mem.ram address) = vm.mem.ram address := by
-  have unchanged : replaceOutside ramSize vm.mem.ram (.ok (.next vm, host) world) =
-      .ok (.next vm, host) world := by
-    simp only [replaceOutside, replaceOutside.replace, ite_self]
-  have preserved := confined _ reachable vm.mem.ram
-  rw [unchanged, step, Option.map_some] at preserved
-  have memory := congrArg
-    (fun c : Configuration => match c with
-      | .ok (.next vm', _) _ | .ok (.brk vm', _) _ => vm'.mem.ram address
-      | .error _ _ => 0) (Option.some.inj preserved)
-  cases outcome <;> simpa [replaceOutside, replaceOutside.replace, Nat.not_lt.mpr outside] using memory
+/-- Replace the unrepresented part of a VM's RAM. -/
+def replaceRAM (ram : Word → Byte) (vm : Uxn.State) : Uxn.State :=
+  { vm with mem.ram := fun address =>
+      if address.toNat < ramSize then vm.mem.ram address else ram address }
 
-/-- Any observation independent of outside RAM is unchanged by replacing it
-before a confined instruction. -/
-theorem Semantics.Confined.observe {start state : Configuration} {α : Type}
-    (confined : Confined start) (reachable : Reachable start state)
+/-- Observations that ignore outside RAM commute with a confined transition. -/
+theorem Confined.observe {start : Configuration} {state : Uxn.Host.State}
+    {world : Void IO.RealWorld} {α : Type}
+    (confined : Confined start) (reachable : Reachable start (.running state world))
     (observe : Configuration → α)
-    (unchanged : ∀ ram state, observe (replaceOutside ramSize ram state) = observe state)
+    (unchanged : ∀ ram config, observe (replaceOutside ram config) = observe config)
     (ram : Word → Byte) :
-    (next (replaceOutside ramSize ram state)).map observe = (next state).map observe := by
-  rw [confined _ reachable ram, Option.map_map]
+    ((replaceOutside ram (.running state world)).next).map observe =
+      (Configuration.next (.running state world)).map observe := by
+  rw [confined state world reachable ram, Option.map_map]
   simp only [Function.comp_def, unchanged]
 
-end ProgramProofs.Uxnmin
+/-- Extensional confinement forces the fetched instruction to be in guest RAM. -/
+theorem Confined.pc_lt {start : Configuration} (confined : Confined start)
+    (state : Uxn.Host.State) (world : Void IO.RealWorld) (after : ReturnTo)
+    (reachable : Reachable start (.running state world))
+    (control : state.control = .evaluating after) : state.vm.pc.toNat < ramSize := by
+  let evaluating : Configuration → Bool
+    | .running state _ => match state.control with | .evaluating _ => true | _ => false
+    | _ => false
+  have replacement (ram : Word → Byte) (config : Configuration) :
+      evaluating (replaceOutside ram config) = evaluating config := by
+    cases config <;> rfl
+  have tag (ram : Word → Byte) (opcode :
+      (if state.vm.pc.toNat < ramSize then state.vm.mem.ram state.vm.pc else ram state.vm.pc) = 0) :
+      ((replaceOutside ram (.running state world)).next).map evaluating = some false := by
+    simp only [replaceOutside, Configuration.next, Uxn.Host.State.next, control]
+    simp [Uxn.Host.step, opcode, uxn_state, uxn_step, evaluating, Configuration.ofResult]
+    rfl
+  have lit (ram : Word → Byte) (opcode :
+      (if state.vm.pc.toNat < ramSize then state.vm.mem.ram state.vm.pc else ram state.vm.pc) = 0x80) :
+      ((replaceOutside ram (.running state world)).next).map evaluating = some true := by
+    simp only [replaceOutside, Configuration.next, Uxn.Host.State.next, control]
+    simp [Uxn.Host.step, opcode, uxn_state, uxn_step, evaluating, Configuration.ofResult]
+    rfl
+  by_contra outside
+  have zero := congrArg (Option.map evaluating) (confined state world reachable (fun _ => 0))
+  have nonzero := congrArg (Option.map evaluating) (confined state world reachable (fun _ => 0x80))
+  simp only [Option.map_map, Function.comp_def, replacement] at zero nonzero
+  rw [tag _ (by simp [outside])] at zero
+  rw [lit _ (by simp [outside])] at nonzero
+  exact Bool.noConfusion (Option.some.inj (zero.trans nonzero.symm))
+
+end ProgramProofs.Uxnmin.Model

@@ -1,6 +1,12 @@
--- A Uxn host supporting a subset of the Varvara spec https://wiki.xxiivv.com/site/varvara.html.
 import Uxn.Host.File
 import Uxn.Host.Ports
+
+/-! A UXN host implementing a subset of the Varvara spec [1].
+
+The implementation is a state machine which State.next drives. This
+simplifies refinement proofs about host implementations.
+
+[1]: https://wiki.xxiivv.com/site/varvara.html  -/
 
 namespace Uxn.Host
 
@@ -9,13 +15,33 @@ structure File where
   length : Word := 0
   handle : Option File.Handle := none
 
+/-- The VM host runs a program in three phases. Arguments are fed in,
+then standard input is. The program is notified when input is done. -/
+inductive Console where
+  | argument (bytes : List UInt8) (remaining : List String)
+  | input
+  | done
+
+/-- Does completion of an event result in argument processing or
+console work? -/
+inductive ReturnTo where
+  | arguments (args : List String)
+  | console (work : Console)
+
+inductive Control where
+  | evaluating (after : ReturnTo)
+  | delivering (value kind : Byte) (after : Console)
+  | console (work : Console)
+
 structure State where
   vm : Uxn.State
+  control : Control := .evaluating (.arguments [])
   ports : Vector Byte 0x100 := .replicate _ 0
   -- uxn2 updates Console/vector only when the low-byte of its
   -- port is written to. hence, we can't derive its value from the
   -- ports' state alone.
   consoleVector : Word := 0
+  -- Remaining instruction budget when State.run returns; next does not consult it.
   fuel : Option Nat := none
   -- like Console/vector, File/name and File/length cannot be derived
   -- from port state.
@@ -33,16 +59,29 @@ def State.readWord (s : State) (port : Byte) : Word :=
 def State.writeWord (s : State) (port : Byte) (value : Word) : State :=
   (s.write port ((value >>> 8).setWidth 8)).write (port + 1) (value.setWidth 8)
 
-/-- Load a ROM and prepare its reset entry for evaluation. -/
-def initialState (rom : ByteArray) : State :=
+def State.exitCode (s : State) : UInt32 :=
+  (s.read Port.System.state &&& 0x7f).toNat.toUInt32
+
+/-- Load a ROM and prepare its reset entry and console arguments. -/
+def initialState (rom : ByteArray) (args : List String := []) : State :=
   let (memSize, romStart) := (0x10000, 0x100)
   let ram := rom.copySlice 0 ⟨Array.replicate memSize 0⟩ romStart (memSize - romStart)
-  { vm :=
-      { pc := BitVec.ofNat 16 romStart
-        mem :=
-          { ram := fun address => ram[address.toNat]!.toBitVec
-            wstk := { data := fun _ => 0, ptr := 0 }
-            rstk := { data := fun _ => 0, ptr := 0 } } } }
+  ({ vm :=
+       { pc := BitVec.ofNat 16 romStart
+         mem :=
+           { ram := fun address => ram[address.toNat]!.toBitVec
+             wstk := { data := fun _ => 0, ptr := 0 }
+             rstk := { data := fun _ => 0, ptr := 0 } } }
+     control := .evaluating (.arguments args) } : State).write
+       Port.Console.type (if args.isEmpty then 0 else 1)
+
+def load (handle : IO.FS.Handle) (args : List String := [])
+    (limit : Nat := 0xff00) : IO State := do
+  return initialState (← handle.read limit.toUSize) args
+
+/-- Load a ROM by filename, using the same open/read operations as `main`. -/
+def file (filename : String) (args : List String := []) : IO State := do
+  load (← IO.FS.Handle.mk filename .read) args
 
 private def fileName (mem : Memory) (address : Word) : Option String := Id.run do
   let mut bytes := ByteArray.empty
@@ -101,57 +140,54 @@ def step (vm : Uxn.State) : StateT State IO Outcome :=
   | .done outcome => pure outcome
   | .request request vm resume => resume <$> respond vm.mem request
 
-def evalLoop : Outcome → StateT State IO Unit
-  | .brk vm => modify fun s => { s with vm }
-  | .next vm => do
-    if (← get).fuel == some 0 then
-      modify fun s => { s with vm }
-    else
-      modify fun s => { s with fuel := s.fuel.map Nat.pred }
-      evalLoop (← step vm)
+/-- Select the next argument, or stdin when there are no arguments left. -/
+def Console.arguments : List String → Console
+  | [] => .input
+  | arg :: args => .argument arg.toUTF8.data.toList args
+
+/-- One host transition: a VM instruction, an input read, or console delivery
+and routing. -/
+def State.next (s : State) : Option (IO State) :=
+  match s.control with
+  | .evaluating after => some do
+      match ← step s.vm s with
+      | (.next vm, s) => return { s with vm }
+      | (.brk vm, s) => return { s with vm, control := .console (match after with
+          | .arguments args => if s.consoleVector == 0 then .done else .arguments args
+          | .console work => work) }
+  | .delivering value kind after => some do
+      let s := (s.write Port.Console.read value).write Port.Console.type kind
+      -- Once the console loop has started, clearing the vector skips
+      -- callbacks but does not stop input consumption.
+      if s.consoleVector == 0 then
+        return { s with control := .console after }
+      else
+        return { s with vm.pc := s.consoleVector, control := .evaluating (.console after) }
+  | .console (.argument bytes args) => some do
+      if let byte :: bytes := bytes then
+        if s.read Port.System.state == 0 && byte != 0 then
+          return { s with control := .delivering byte.toBitVec 2 (.argument bytes args) }
+      -- The separator is delivered even if the preceding callback set the halt flag.
+      return { s with control := .delivering 10 (if args.isEmpty then 4 else 3) (.arguments args) }
+  | .console .input => some do
+      if s.read Port.System.state == 0 then
+        -- An empty read is EOF; a NUL byte is still a console event.
+        if let some byte := (← (← IO.getStdin).read 1)[0]? then
+          return { s with control := .delivering byte.toBitVec 1 .input }
+      -- EOF and host halt both deliver the final console event before returning.
+      return { s with control := .delivering 10 4 .done }
+  | .console .done => none
+
+/-- Execute until completion or budget exhaustion of fuel. -/
+def State.run (state : State) (fuel : Option Nat := none) : IO State := do
+  if fuel == some 0 then return { state with fuel }
+  match state.next with
+  | none => return { state with fuel }
+  | some action =>
+      (← action).run (match state.control with
+        | .evaluating _ => fuel.map Nat.pred
+        | _ => fuel)
 partial_fixpoint
-
-def eval (pc : Word) : StateT State IO Unit := do
-  evalLoop (.next { (← get).vm with pc })
-
-def run.consoleInput (value kind : Byte) : StateT State IO Unit := do
-  if (← get).fuel == some 0 then return
-  modify fun s => (s.write Port.Console.read value).write Port.Console.type kind
-  if (← get).consoleVector != 0 then
-    eval (← get).consoleVector
-
-def run.consoleArgs (args : List String) : StateT State IO Unit :=
-  match args with
-  | [] => pure ()
-  | arg :: args => do
-    if (← get).fuel == some 0 then return
-    for byte in arg.toUTF8 do
-      if (← get).fuel == some 0 || (← get).read Port.System.state != 0 || byte == 0 then break
-      run.consoleInput byte.toBitVec 2
-    -- reference delivers even when the preceding callback set the halt flag.
-    run.consoleInput 10 (if args.isEmpty then 4 else 3)
-    run.consoleArgs args
-
-def run.readConsole : StateT State IO Unit := do
-  if (← get).fuel == some 0 || (← get).read Port.System.state != 0 then return
-  match (← (← IO.getStdin).read 1)[0]? with
-  | none => pure ()
-  | some byte =>
-    run.consoleInput byte.toBitVec 1
-    run.readConsole
-partial_fixpoint
-
-/-- Run a ROM from its initial state, with no arguments and unlimited fuel by default. -/
-def run (rom : ByteArray) (args : List String := [])
-    (fuel : Option Nat := none) : IO (UInt32 × State) :=
-  StateT.run (s := initialState rom) do
-    modify fun s => { s.write Port.Console.type (if args.isEmpty then 0 else 1) with fuel }
-    evalLoop (.next (← get).vm)
-    if (← get).fuel != some 0 && (← get).consoleVector != 0 then
-      run.consoleArgs args
-      run.readConsole
-      run.consoleInput 10 4
-    return ((← get).read Port.System.state &&& 0x7f).toNat.toUInt32
 
 def main (args : List String) : IO UInt32 := do
   match args with
@@ -162,7 +198,7 @@ def main (args : List String) : IO UInt32 := do
     | .error _ =>
       report (← IO.getStderr) s!"{← IO.appPath}: {file} not found.\n"
     | .ok handle =>
-      return (← run (← handle.read 0xff00) args).1
+      return (← (← load handle args).run).exitCode
 where
   report (stream : IO.FS.Stream) (message : String) : IO UInt32 := do
     stream.putStr message

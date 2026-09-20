@@ -36,17 +36,17 @@ run_cmd do
 theorem correct :
     ∃ final : Fin 25 → Uxn.Host.State,
     ∃ eof : Uxn.Host.State,
-    ∃ onInvalid : Byte → IO (UInt32 × Uxn.Host.State),
-      Uxn.Host.run rom =
+    ∃ onInvalid : Byte → IO Uxn.Host.State,
+      (initialState rom).run =
         (do
           match (← (← IO.getStdin).read 1)[0]? with
-          | none => pure (0, eof)
+          | none => pure eof
           | some b =>
-            if h : b.toNat < 25 then pure (0, final ⟨b.toNat, h⟩)
+            if h : b.toNat < 25 then pure (final ⟨b.toNat, h⟩)
             else onInvalid b.toBitVec) ∧
-      eof.vm.mem.wstk.ptr = 0 ∧ eof.vm.mem.rstk.ptr = 0 ∧
+      eof.exitCode = 0 ∧ eof.vm.mem.wstk.ptr = 0 ∧ eof.vm.mem.rstk.ptr = 0 ∧
       ∀ n : Fin 25,
-        (final n).vm.mem.wstk.ptr = 2 ∧ (final n).vm.mem.rstk.ptr = 0 ∧
+        (final n).exitCode = 0 ∧ (final n).vm.mem.wstk.ptr = 2 ∧ (final n).vm.mem.rstk.ptr = 0 ∧
         ((final n).vm.mem.wstk.data 0 ++
           (final n).vm.mem.wstk.data 1).toNat = Nat.fib n.val := by
   -- Prove the recursive subroutine contract before assembling the host run.
@@ -151,33 +151,36 @@ theorem correct :
           entry.trans (prepareFirst.trans (first.trans (prepareSecond.trans (second.trans last))))
 
   -- Install the input callback while preserving empty stacks.
-  have boot (ram : Word → Byte) (hc : Code rom 54 ram) :
+  have boot (after : ReturnTo) (ram : Word → Byte) (hc : Code rom 54 ram) :
       ∃ final : Uxn.Host.State,
-        evalLoop (.next (machine ram 0x100 Stack.empty Stack.empty))
-          { vm := machine ram 0x100 Stack.empty Stack.empty } = pure ((), final) ∧
+        evaluate after (machine ram 0x100 Stack.empty Stack.empty)
+          { vm := machine ram 0x100 Stack.empty Stack.empty } = finish after final ∧
         final.consoleVector = 0x107 ∧ final.fuel = none ∧ final.read 0x0f = 0 ∧
         final.vm.mem.ram = ram ∧ Holds final.vm.mem.wstk [] ∧ Holds final.vm.mem.rstk [] := by
-    clear * - ram hc
+    clear * - after ram hc
     dsimp [Stack.empty]
-    iterate 5 host_step [Code.read hc, rom]
-    refine ⟨_, rfl, ?_⟩
-    simp only [and_true, true_and]
-    refine ⟨?_, Holds.empty _ rfl, Holds.empty _ rfl⟩
+    iterate 4 host_step [Code.read hc, rom]
+    refine ⟨{
+      vm := machine ram 0x107 ⟨Function.update (Function.update (Function.update (fun _ => 0) 0 1) 1 7) 2 0x10, 0⟩ Stack.empty,
+      ports := ((Vector.replicate 256 0).set 0x10 1).set 0x11 7,
+      consoleVector := 0x107}, ?_, ?_⟩
+    · cases after <;> simp [finish, machine, Stack.empty]
+    refine ⟨rfl, rfl, ?_, rfl, Holds.empty _ rfl, Holds.empty _ rfl⟩
     simp [Vector.get, Fin.cast, Array.getElem_set]
 
   -- An input event loads the argument and calls the recursive subroutine.
-  have input_prefix (ram : Word → Byte) (hc : Code rom 54 ram)
+  have input_prefix (after : ReturnTo) (ram : Word → Byte) (hc : Code rom 54 ram)
       (n : Nat) (hn : n ≤ 24) (w r : Byte → Byte) (saved : Uxn.State)
       (ports : Vector Byte 256) (file : Uxn.Host.File) :
       ∃ sw sr,
-        evalLoop (.next (machine ram 0x107 ⟨w, 0⟩ ⟨r, 0⟩))
+        evaluate after (machine ram 0x107 ⟨w, 0⟩ ⟨r, 0⟩)
           { vm := saved, ports := (ports.set 0x12 (BitVec.ofNat 8 n)).set 0x17 1,
             consoleVector := 0x107, file } =
-        evalLoop (.next (machine ram 0x11f sw sr))
+        evaluate after (machine ram 0x11f sw sr)
           { vm := saved, ports := (ports.set 0x12 (BitVec.ofNat 8 n)).set 0x17 1,
             consoleVector := 0x107, file } ∧
         Holds sw (bytes (BitVec.ofNat 16 n)) ∧ Holds sr (bytes 0x119) := by
-    clear * - ram hc n hn w r saved ports file
+    clear * - after ram hc n hn w r saved ports file
     iterate 10 host_step [Code.read hc, rom]
     refine ⟨_, _, rfl, ?_, ?_⟩
     · constructor
@@ -200,37 +203,42 @@ theorem correct :
     s.vm.mem.ram = ram ∧ Holds s.vm.mem.wstk (bytes x) ∧ Holds s.vm.mem.rstk [] ∧
     s.consoleVector = 0x107 ∧ s.fuel = none ∧ s.read 0x0f = 0x80
 
-  have halt (ram : Word → Byte) (hc : Code rom 54 ram)
+  have halt (after : ReturnTo) (ram : Word → Byte) (hc : Code rom 54 ram)
       (x : Word) (w r : Byte → Byte) (hw : Holds ⟨w, 2⟩ (bytes x))
       (saved : Uxn.State) (ports : Vector Byte 256) (file : Uxn.Host.File) :
       ∃ final : Uxn.Host.State,
-        evalLoop (.next (machine ram 0x119 ⟨w, 2⟩ ⟨r, 0⟩))
-          { vm := saved, ports, consoleVector := 0x107, file } = pure ((), final) ∧
+        evaluate after (machine ram 0x119 ⟨w, 2⟩ ⟨r, 0⟩)
+          { vm := saved, ports, consoleVector := 0x107, file } = finish after final ∧
         Finished ram x final := by
-    clear * - Finished ram hc x w r hw saved ports file
-    iterate 5 host_step [Code.read hc, rom]
-    refine ⟨_, rfl, rfl, ?_, Holds.empty _ rfl, rfl, rfl, ?_⟩
-    · simpa [Stack.push, Stack.pop] using
+    clear * - after Finished ram hc x w r hw saved ports file
+    iterate 4 host_step [Code.read hc, rom]
+    refine ⟨{
+      vm := machine ram 0x11f ⟨Function.update (Function.update w 2 0x80) 3 0x0f, 2⟩ ⟨r, 0⟩,
+      ports := ports.set 0x0f 0x80, consoleVector := 0x107, file},
+      ?_, rfl, ?_, Holds.empty _ rfl, rfl, rfl, ?_⟩
+    · cases after <;> simp [finish, machine, Stack.empty]
+    · simpa [machine, Stack.push, Stack.pop] using
         ((hw.push 0x80 (by simp [bytes])).push 0x0f (by simp [bytes])).pop.pop
     · simp [Uxn.Host.State.read, Vector.get, Fin.cast, Array.getElem_set]
 
   have end_event (ram : Word → Byte) (hc : Code rom 54 ram) (x : Word)
       (s : Uxn.Host.State) (hs : Finished ram x s) :
       ∃ final : Uxn.Host.State,
-        run.consoleInput 10 4 s = pure ((), final) ∧ Finished ram x final := by
+        {s with control := .delivering 10 4 .done}.run = pure final ∧ Finished ram x final := by
     clear * - Finished ram hc x s hs
-    rcases s with ⟨⟨pc, ⟨ram', ⟨w, wp⟩, ⟨r, rp⟩⟩⟩, ports, vector, fuel, file⟩
+    rcases s with ⟨⟨pc, ⟨ram', ⟨w, wp⟩, ⟨r, rp⟩⟩⟩, control, ports, vector, fuel, file⟩
     rcases hs with ⟨hram, hw, hr, hvector, hfuel, hhalt⟩
     dsimp at hram hvector hfuel
     subst ram' vector fuel
     have hpw : wp = 2 := hw.ptr_eq
     have hpr : rp = 0 := hr.ptr_eq
     subst wp rp
-    simp only [run.consoleInput, eval]
-    state_reduce
-    dsimp [Uxn.Host.State.write]
-    state_reduce
-    iterate 7 host_step [Code.read hc, rom]
+    rw [run_next]
+    simp only [Uxn.Host.State.next]
+    simp [uxn_state, Uxn.Host.State.write]
+    iterate 6 host_step [Code.read hc, rom]
+    rw [run_next]
+    simp only [Uxn.Host.State.next]
     refine ⟨_, rfl, rfl, ?_, Holds.empty _ rfl, rfl, rfl, ?_⟩
     · constructor
       · simp [bytes]
@@ -240,38 +248,37 @@ theorem correct :
         interval_cases i <;> simpa [Function.update_apply] using hw.data_eq _ (by simp [bytes])
     · simpa [Uxn.Host.State.read, Vector.get, Fin.cast, Array.getElem_set] using hhalt
 
-  have input_event (ram : Word → Byte) (hc : Code rom 54 ram) (n : Nat) (hn : n ≤ 24)
+  have input_event (after : Console) (ram : Word → Byte) (hc : Code rom 54 ram) (n : Nat) (hn : n ≤ 24)
       (s : Uxn.Host.State) (hram : s.vm.mem.ram = ram)
       (hw : Holds s.vm.mem.wstk []) (hr : Holds s.vm.mem.rstk [])
       (hvector : s.consoleVector = 0x107) (hfuel : s.fuel = none) :
       ∃ final : Uxn.Host.State,
-        run.consoleInput (BitVec.ofNat 8 n) 1 s = pure ((), final) ∧
+        {s with control := .delivering (BitVec.ofNat 8 n) 1 after}.run = finish (.console after) final ∧
         Finished ram (BitVec.ofNat 16 (Nat.fib n)) final := by
-    rcases s with ⟨⟨pc, ⟨ram', ⟨w, wp⟩, ⟨r, rp⟩⟩⟩, ports, vector, fuel, file⟩
+    rcases s with ⟨⟨pc, ⟨ram', ⟨w, wp⟩, ⟨r, rp⟩⟩⟩, control, ports, vector, fuel, file⟩
     dsimp at hram hvector hfuel
     subst ram' vector fuel
     have hpw : wp = 0 := hw.ptr_eq
     have hpr : rp = 0 := hr.ptr_eq
     subst wp rp
-    obtain ⟨sw, sr, hprefix, hsw, hsr⟩ := input_prefix ram hc n hn w r
+    obtain ⟨sw, sr, hprefix, hsw, hsr⟩ := input_prefix (.console after) ram hc n hn w r
       (machine ram pc ⟨w, 0⟩ ⟨r, 0⟩) ports file
     obtain ⟨tw, tr, hsteps, htw, htr⟩ := fib_call ram hc n hn [] [] 0x119
       (by simp; omega) (by simp; omega) sw sr (by simpa using hsw) (by simpa using hsr)
-    have heval := hsteps.evalLoop
+    have heval := hsteps.evaluate (.console after)
       { vm := machine ram pc ⟨w, 0⟩ ⟨r, 0⟩,
-        ports := (ports.set 0x12 (BitVec.ofNat 8 n)).set 0x17 1, consoleVector := 0x107, file } rfl
-    simp only [run.consoleInput, eval]
-    state_reduce
-    dsimp [Uxn.Host.State.write]
-    simp [machine] at hprefix heval
-    state_reduce
+        ports := (ports.set 0x12 (BitVec.ofNat 8 n)).set 0x17 1, consoleVector := 0x107, file }
+    rw [run_next]
+    simp only [Uxn.Host.State.next]
+    simp [uxn_state, Uxn.Host.State.write]
+    simp [evaluate, machine] at hprefix heval
     rw [hprefix, heval]
     rcases tw with ⟨tw, wp⟩
     rcases tr with ⟨tr, rp⟩
     have hpw : wp = 2 := htw.ptr_eq
     have hpr : rp = 0 := htr.ptr_eq
     subst wp rp
-    exact halt ram hc (BitVec.ofNat 16 (Nat.fib n)) tw tr htw
+    exact halt (.console after) ram hc (BitVec.ofNat 16 (Nat.fib n)) tw tr htw
       (machine ram pc ⟨w, 0⟩ ⟨r, 0⟩) ((ports.set 0x12 (BitVec.ofNat 8 n)).set 0x17 1) file
 
   have eof_event (ram : Word → Byte) (hc : Code rom 54 ram)
@@ -280,108 +287,74 @@ theorem correct :
       (hvector : s.consoleVector = 0x107) (hfuel : s.fuel = none)
       (hhalt : s.read 0x0f = 0) :
       ∃ final : Uxn.Host.State,
-        run.consoleInput 10 4 s = pure ((), final) ∧
+        {s with control := .delivering 10 4 .done}.run = pure final ∧
         final.vm.mem.wstk.ptr = 0 ∧ final.vm.mem.rstk.ptr = 0 ∧
         final.read 0x0f = 0 := by
     clear * - ram hc s hram hw hr hvector hfuel hhalt
-    rcases s with ⟨⟨pc, ⟨ram', ⟨w, wp⟩, ⟨r, rp⟩⟩⟩, ports, vector, fuel, file⟩
+    rcases s with ⟨⟨pc, ⟨ram', ⟨w, wp⟩, ⟨r, rp⟩⟩⟩, control, ports, vector, fuel, file⟩
     dsimp at hram hvector hfuel
     subst ram' vector fuel
     have hpw : wp = 0 := hw.ptr_eq
     have hpr : rp = 0 := hr.ptr_eq
     subst wp rp
-    simp only [run.consoleInput, eval]
-    state_reduce
-    dsimp [Uxn.Host.State.write]
-    state_reduce
-    iterate 7 host_step [Code.read hc, rom]
+    rw [run_next]
+    simp only [Uxn.Host.State.next]
+    simp [uxn_state, Uxn.Host.State.write]
+    iterate 6 host_step [Code.read hc, rom]
+    rw [run_next]
+    simp only [Uxn.Host.State.next]
     refine ⟨_, rfl, rfl, rfl, ?_⟩
     simpa [Uxn.Host.State.read, Vector.get, Fin.cast, Array.getElem_set] using hhalt
 
   let input : IO (Option UInt8) := do return (← (← IO.getStdin).read 1)[0]?
   have execution :
-      ∃ afterRead : Option UInt8 → IO (UInt32 × Uxn.Host.State),
-        Uxn.Host.run rom = (input >>= afterRead) ∧
-        (∃ final : Uxn.Host.State, afterRead none = pure (0, final) ∧
-          final.vm.mem.wstk.ptr = 0 ∧ final.vm.mem.rstk.ptr = 0) ∧
+      ∃ afterRead : Option UInt8 → IO Uxn.Host.State,
+        (initialState rom).run = (input >>= afterRead) ∧
+        (∃ final : Uxn.Host.State, afterRead none = pure final ∧
+          final.exitCode = 0 ∧ final.vm.mem.wstk.ptr = 0 ∧ final.vm.mem.rstk.ptr = 0) ∧
         ∀ (n : Nat) (_hn : n ≤ 24), ∃ final : Uxn.Host.State,
-          afterRead (some (UInt8.ofNat n)) = pure (0, final) ∧
+          afterRead (some (UInt8.ofNat n)) = pure final ∧ final.exitCode = 0 ∧
           final.vm.mem.wstk.ptr = 2 ∧ final.vm.mem.rstk.ptr = 0 ∧
           (final.vm.mem.wstk.data 0 ++ final.vm.mem.wstk.data 1).toNat = Nat.fib n := by
     let ram := (initialState rom).vm.mem.ram
     have hc : Code rom 54 ram := Code.initial rom 54 (by decide) (by decide)
-    obtain ⟨started, hboot, hv, hf, hz, hram, hw, hr⟩ := boot ram hc
-    simp at hf hv hz
-    let finish : StateT Uxn.Host.State IO UInt32 := do
-      run.consoleInput 10 4
-      return ((← get).read 0x0f &&& 0x7f).toNat.toUInt32
-    let afterRead (value : Option UInt8) : IO (UInt32 × Uxn.Host.State) :=
-      (do
-        match value with
-        | none => pure ()
-        | some b =>
-          run.consoleInput b.toBitVec 1
-          run.readConsole
-        finish) started
+    obtain ⟨started, hboot, hv, hf, hz, hram, hw, hr⟩ := boot (.arguments []) ram hc
+    let afterRead (value : Option UInt8) : IO Uxn.Host.State :=
+      match value with
+      | none => {started with control := .delivering 10 4 .done}.run
+      | some b => {started with control := .delivering b.toBitVec 1 .input}.run
     refine ⟨afterRead, ?_, ?_, ?_⟩
-    · unfold run
-      state_reduce
-      simp only [Uxn.Host.State.write, Vector.set_replicate_self]
-      rw [← initial_shape rom]
-      dsimp [ram] at hboot
-      simp only [Uxn.Host.State.write, Vector.set_replicate_self]
-      simp [machine] at hboot ⊢
+    · rw [← initial_shape rom]
+      change evaluate (.arguments []) (machine ram 0x100 Stack.empty Stack.empty)
+        {vm := machine ram 0x100 Stack.empty Stack.empty} = _
       rw [hboot]
-      state_reduce
-      simp only [hf, hv]
-      dsimp
-      simp only [run.consoleArgs]
-      state_reduce
-      rw [run.readConsole.eq_def]
-      state_reduce
-      simp only [hf, hz]
-      dsimp
-      simp only [uxn_state, bind_assoc, pure_bind]
-      simp only [input, bind_assoc, pure_bind]
+      simp only [finish, hv, Console.arguments]
+      rw [run_next]
+      simp [Uxn.Host.State.read] at hz
+      simp [Uxn.Host.State.next, Uxn.Host.State.read, Port.System.state, hz, input, afterRead, hv, uxn_state, bind_assoc]
       apply congrArg (fun f => IO.getStdin.toEIO >>= f)
       funext stream
       apply congrArg (fun f => stream.read 1 >>= f)
       funext data
-      cases data[0]? <;> dsimp [afterRead, finish] <;> state_reduce
+      cases data[0]? <;> rfl
     · obtain ⟨final, hend, hw, hr, hh⟩ := eof_event ram hc started hram hw hr hv hf hz
-      refine ⟨final, ?_, hw, hr⟩
-      dsimp [afterRead, finish]
-      state_reduce
-      simp at hend
-      rw [hend]
-      state_reduce
-      simp at hh
+      refine ⟨final, hend, ?_, hw, hr⟩
+      change (final.read 0x0f &&& 0x7f).toNat.toUInt32 = 0
       rw [hh]
       rfl
     · intro n hn
-      obtain ⟨stopped, hinput, hs⟩ := input_event ram hc n hn started hram hw hr hv hf
+      obtain ⟨stopped, hinput, hs⟩ := input_event .input ram hc n hn started hram hw hr hv hf
       obtain ⟨final, hend, hfinal⟩ := end_event ram hc (BitVec.ofNat 16 (Nat.fib n)) stopped hs
       have ⟨_, hworking, hreturned, _, _, hh⟩ := hfinal
-      refine ⟨final, ?_, hworking.ptr_eq, hreturned.ptr_eq, ?_⟩
-      · dsimp [afterRead]
-        state_reduce
-        simp at hinput
-        rw [show (UInt8.ofNat n).toBitVec = BitVec.ofNat 8 n by rfl, hinput]
-        state_reduce
-        rw [run.readConsole.eq_def]
-        state_reduce
-        have hsf := hs.2.2.2.2.1
+      refine ⟨final, ?_, ?_, hworking.ptr_eq, hreturned.ptr_eq, ?_⟩
+      · change {started with control := .delivering (BitVec.ofNat 8 n) 1 .input}.run = _
+        rw [hinput]
+        unfold finish
+        rw [run_next]
         have hsh := hs.2.2.2.2.2
-        simp at hsf hsh
-        simp only [hsf, hsh]
-        simp
-        state_reduce
-        dsimp [finish]
-        state_reduce
-        simp at hend
-        rw [hend]
-        state_reduce
-        simp at hh
+        simp [Uxn.Host.State.read] at hsh
+        simpa [Uxn.Host.State.next, Uxn.Host.State.read, Port.System.state, hsh] using hend
+      · change (final.read 0x0f &&& 0x7f).toNat.toUInt32 = 0
         rw [hh]
         rfl
       · have fib_fits : Nat.fib n < 65536 := by
@@ -395,16 +368,16 @@ theorem correct :
         rw [← BitVec.setWidth_ofNat_of_le (by decide : 8 ≤ 16) (Nat.fib n), append_split]
         exact Nat.mod_eq_of_lt fib_fits
   classical
-  obtain ⟨afterRead, hrun, ⟨eof, heof, heofw, heofr⟩, hvalid⟩ := execution
+  obtain ⟨afterRead, hrun, ⟨eof, heof, heofexit, heofw, heofr⟩, hvalid⟩ := execution
   choose final hfinal using fun (n : Fin 25) => hvalid n.val (by omega)
   refine ⟨final, eof, fun b => afterRead (some (UInt8.ofBitVec b)), ?_,
-    heofw, heofr, fun n => (hfinal n).2⟩
+    heofexit, heofw, heofr, fun n => (hfinal n).2⟩
   rw [hrun]
   calc
     (input >>= afterRead) = (input >>= fun value =>
       match value with
-      | none => pure (0, eof)
-      | some b => if h : b.toNat < 25 then pure (0, final ⟨b.toNat, h⟩)
+      | none => pure eof
+      | some b => if h : b.toNat < 25 then pure (final ⟨b.toNat, h⟩)
         else afterRead (some b)) := by
       apply congrArg (fun f => input >>= f)
       funext value

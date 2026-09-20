@@ -1,44 +1,27 @@
+import ProgramProofs.Uxnmin.Loader.Tactics
 import ProgramProofs.Uxnmin.Boundary
-import ProgramProofs.Host.Reduction
 
-set_option maxHeartbeats 1000000
-set_option maxRecDepth 8192
+set_option maxHeartbeats 2000000
+set_option maxRecDepth 10000
 set_option linter.unusedSimpArgs false
-set_option pp.deepTerms false
 set_option backward.isDefEq.respectTransparency false
-namespace ProgramProofs.Uxnmin
-open Semantics
+namespace ProgramProofs.Uxnmin.Model
 open Uxn Uxn.Host ProgramProofs.Host
 
-/-- Once guest evaluation returns, either cleanup branch reaches the reset BRK
-without changing the IO world. -/
-theorem terminal_cleanup (ram : Word → Byte) (working returning : Uxn.Stack)
-    (host : Uxn.Host.State) (world : Void IO.RealWorld) (code : CodeImage ram)
+/-- The reset return selects either the installed guest callback or host completion. -/
+theorem reset_cleanup (ram : Word → Byte) (working returning : Uxn.Stack)
+    (host : Uxn.Host.State) (code : CodeImage ram)
     (wp : working.ptr = 0) (rp : returning.ptr = 4)
     (loaderFrame : returning.data 0 ++ returning.data 1 = 0x139#16)
     (runFrame : returning.data 2 ++ returning.data 3 = 0x154#16) :
-    ∃ finalVM finalHost,
-      Relation.ReflTransGen
-        (fun x y => next x = some y ∧ label x = .ok () world)
-        (.ok (.next (machine ram 0x173 working returning), host) world)
-        (.ok (.brk finalVM, finalHost) world) := by
-  have prepend {vm vm' : Uxn.State} {host host' : Uxn.Host.State}
-      (step : Uxn.Host.step vm host world = .ok (.next vm', host') world)
-      (tail : ∃ finalVM finalHost,
-        Relation.ReflTransGen (fun x y => next x = some y ∧ label x = .ok () world)
-          (.ok (.next vm', host') world) (.ok (.brk finalVM, finalHost) world)) :
-      ∃ finalVM finalHost,
-        Relation.ReflTransGen (fun x y => next x = some y ∧ label x = .ok () world)
-          (.ok (.next vm, host) world) (.ok (.brk finalVM, finalHost) world) := by
-    obtain ⟨finalVM, finalHost, tail⟩ := tail
-    exact ⟨finalVM, finalHost, .head ⟨congrArg some step, rfl⟩ tail⟩
-  have finish (vm : Uxn.State) (host : Uxn.Host.State) (opcode : vm.mem.ram vm.pc = 0) :
-      ∃ finalVM finalHost,
-        Relation.ReflTransGen (fun x y => next x = some y ∧ label x = .ok () world)
-          (.ok (.next vm, host) world) (.ok (.brk finalVM, finalHost) world) := by
-    refine ⟨{ vm with pc := vm.pc + 1 }, host, .single ⟨?_, rfl⟩⟩
-    simp [next, Uxn.Host.step, uxn_state, uxn_step, opcode]
-    rfl
+    ∃ final : Uxn.Host.State,
+      PureReaches {host with
+        vm := machine ram 0x173 working returning, control := .evaluating (.console .input)} final ∧
+      final.control = .evaluating (.console .input) ∧ final.vm.pc = 0x139 ∧
+      final.vm.mem.ram = ram ∧ final.vm.mem.wstk.ptr = 0 ∧ final.vm.mem.rstk.ptr = 0 ∧
+      final.consoleVector = (if ram 0x176 ||| ram 0x175 = 0 then host.consoleVector else 0x174) ∧
+      final.read Port.System.state =
+        (if ram 0x176 ||| ram 0x175 = 0 then host.read Port.System.state ||| 0x80 else host.read Port.System.state) := by
   have code139 : ram 0x139#16 = 0x00#8 := code _ (by decide) (by decide) (by simp [MutableCode])
   have code154 : ram 0x154#16 = 0xa0#8 := code _ (by decide) (by decide) (by simp [MutableCode])
   have code155 : ram 0x155#16 = 0x01#8 := code _ (by decide) (by decide) (by simp [MutableCode])
@@ -71,31 +54,31 @@ theorem terminal_cleanup (ram : Word → Byte) (working returning : Uxn.Stack)
   have lowByte (high low : Byte) : (high ++ low).setWidth 8 = low := by
     rw [BitVec.setWidth_append_eq_right]
   simp only [BitVec.ofNat_eq_ofNat] at loaderFrame runFrame
-  iterate 4
-    apply prepend
-    · simp [Uxn.Host.step, uxn_state, uxn_step, highByte, lowByte,
-        code139, code154, code155, code156, code157, code158, code159, code15a, code15b, code15c, code15d,
-        code15e, code15f, code160, code161, code162, code163, code164, code165, code166, code167, code168,
-        code169, code16a, code16b, code16c, code173, wp, rp, loaderFrame, runFrame]
-      rfl
+  host_steps 4 [code139, code154, code155, code156, code157, code158, code159, code15a, code15b, code15c, code15d, code15e, code15f, code160, code161, code162, code163, code164, code165, code166, code167, code168, code169, code16a, code16b, code16c, code173, wp, rp, loaderFrame, runFrame, highByte, lowByte]
   by_cases zero : ram 0x176#16 ||| ram 0x175#16 = 0#8
-  · iterate 8
-      apply prepend
-      · simp [Uxn.Host.step, uxn_state, uxn_step, respond, deo, Patch.apply, highByte, lowByte, zero,
-          code139, code154, code155, code156, code157, code158, code159, code15a, code15b, code15c, code15d,
-          code15e, code15f, code160, code161, code162, code163, code164, code165, code166, code167, code168,
-          code169, code16a, code16b, code16c, code173, wp, rp, loaderFrame, runFrame]
-        rfl
-    apply finish
-    exact code139
-  · iterate 5
-      apply prepend
-      · simp [Uxn.Host.step, uxn_state, uxn_step, respond, deo, Patch.apply, highByte, lowByte, zero,
-          code139, code154, code155, code156, code157, code158, code159, code15a, code15b, code15c, code15d,
-          code15e, code15f, code160, code161, code162, code163, code164, code165, code166, code167, code168,
-          code169, code16a, code16b, code16c, code173, wp, rp, loaderFrame, runFrame]
-        rfl
-    apply finish
-    exact code139
+  · host_steps 8 [code139, code154, code155, code156, code157, code158, code159, code15a, code15b, code15c, code15d, code15e, code15f, code160, code161, code162, code163, code164, code165, code166, code167, code168, code169, code16a, code16b, code16c, code173, wp, rp, loaderFrame, runFrame, highByte, lowByte, zero]
+    refine ⟨_, .refl _, ?_⟩
+    simp [zero, host_read, Uxn.Host.State.write, Vector.getElem_set, Port.System.state]
+    try exact BitVec.or_comm _ _
+  · host_steps 5 [code139, code154, code155, code156, code157, code158, code159, code15a, code15b, code15c, code15d, code15e, code15f, code160, code161, code162, code163, code164, code165, code166, code167, code168, code169, code16a, code16b, code16c, code173, wp, rp, loaderFrame, runFrame, highByte, lowByte, zero]
+    refine ⟨_, .refl _, ?_⟩
+    simp [zero, host_read, Uxn.Host.State.write, Vector.getElem_set, Port.System.state]
+    try exact BitVec.or_comm _ _
 
-end ProgramProofs.Uxnmin
+/-- An input callback returns directly to its saved outer BRK. -/
+theorem callback_cleanup (ram : Word → Byte) (working returning : Uxn.Stack)
+    (host : Uxn.Host.State) (after : Console) (code : CodeImage ram)
+    (wp : working.ptr = 0) (rp : returning.ptr = 2)
+    (frame : returning.data 0 ++ returning.data 1 = 0x18f#16) :
+    ∃ final : Uxn.Host.State,
+      PureReaches {host with
+        vm := machine ram 0x173 working returning, control := .evaluating (.console after)} final ∧
+      final.control = .evaluating (.console after) ∧ final.vm.pc = 0x18f ∧
+      final.vm.mem.ram = ram ∧ final.vm.mem.wstk.ptr = 0 ∧ final.vm.mem.rstk.ptr = 0 ∧
+      final.consoleVector = host.consoleVector ∧ final.ports = host.ports := by
+  have opcode : ram 0x173#16 = 0x6c#8 := code _ (by decide) (by decide) (by simp [MutableCode])
+  simp only [BitVec.ofNat_eq_ofNat] at frame
+  host_steps 1 [opcode, wp, rp, frame]
+  exact ⟨_, .refl _, rfl, rfl, rfl, wp, rfl, rfl, rfl⟩
+
+end ProgramProofs.Uxnmin.Model

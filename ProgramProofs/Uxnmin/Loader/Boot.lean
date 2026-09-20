@@ -1,34 +1,25 @@
-import ProgramProofs.Uxnmin.Semantics
-import ProgramProofs.Host.Reduction
-import ProgramProofs.Host.IO
-import Mathlib.Tactic.Conv
+import ProgramProofs.Uxnmin.Loader.Tactics
 
 set_option linter.unusedSimpArgs false
-set_option maxRecDepth 30000
+set_option maxRecDepth 10000
 set_option maxHeartbeats 1000000
 set_option backward.isDefEq.respectTransparency false
-
-namespace ProgramProofs.Uxnmin
+namespace ProgramProofs.Uxnmin.Model
 open Uxn Uxn.Host ProgramProofs.Host
 
-/-- After loading, ten native instructions establish the guest evaluation boundary. -/
-theorem post_load_boot_continue (ram : Word → Byte) (hc : Code rom rom.size ram)
-    (index : Byte) (w r : Byte → Byte) (host : Uxn.Host.State) (fuel : Nat) :
-    ∃ vm : Uxn.State, ∃ final : Uxn.Host.State,
-      evalLoop (.next (machine (Function.update ram 0x13e index) 0x136 ⟨w, 0⟩ ⟨r, 0⟩))
-        { host with fuel := some (fuel + 10) } = evalLoop (.next vm) final ∧
-      final.fuel = some fuel ∧ final.read 0x0f = host.read 0x0f ∧ vm.pc = 0x16d ∧ final.consoleVector = 0 ∧
-      vm.mem.ram = Function.update (Function.update (Function.update ram 0x13e index) 0x45 1) 0x46 0 ∧
-      vm.mem.wstk.ptr = 0 ∧ vm.mem.rstk.ptr = 4 ∧
-      vm.mem.rstk.data 0 = 1 ∧ vm.mem.rstk.data 1 = 0x39 ∧
-      vm.mem.rstk.data 2 = 1 ∧ vm.mem.rstk.data 3 = 0x54 := by
-  have read_eq (host : Uxn.Host.State) (port : Byte) :
-      host.read port = host.ports[port.toNat] := rfl
-  have deo_vector (mem : Memory) (value : Byte) :
-      deo mem 0x11#8 value = (do
-        modify (·.write 0x11 value)
-        modify fun host => { host with consoleVector := host.read 0x10 ++ value }
-        return {}) := rfl
+/-- After the actual file action, pure setup establishes the reset dispatch frame. -/
+theorem loader_boot (ram : Word → Byte) (hc : Code rom rom.size ram)
+    (index : Byte) (w r : Byte → Byte) (host : Uxn.Host.State) :
+    ∃ final : Uxn.Host.State,
+      PureReaches {host with
+        vm := machine (Function.update ram 0x13e index) 0x136 ⟨w, 0⟩ ⟨r, 0⟩,
+        control := .evaluating (.console .input)} final ∧
+      final.control = .evaluating (.console .input) ∧
+      final.read 0x0f = host.read 0x0f ∧ final.vm.pc = 0x16d ∧ final.consoleVector = 0 ∧
+      final.vm.mem.ram = Function.update (Function.update (Function.update ram 0x13e index) 0x45 1) 0x46 0 ∧
+      final.vm.mem.wstk.ptr = 0 ∧ final.vm.mem.rstk.ptr = 4 ∧
+      final.vm.mem.rstk.data 0 = 1 ∧ final.vm.mem.rstk.data 1 = 0x39 ∧
+      final.vm.mem.rstk.data 2 = 1 ∧ final.vm.mem.rstk.data 3 = 0x54 := by
   have h54 : ram 0x136#16 = 0x60#8 := hc ⟨54, by decide⟩
   have h55 : ram 0x137#16 = 0x0#8 := hc ⟨55, by decide⟩
   have h56 : ram 0x138#16 = 0xc#8 := hc ⟨56, by decide⟩
@@ -51,23 +42,8 @@ theorem post_load_boot_continue (ram : Word → Byte) (hc : Code rom rom.size ra
   have h393 : ram 0x289#16 = 0x45#8 := hc ⟨393, by decide⟩
   have h394 : ram 0x28a#16 = 0x31#8 := hc ⟨394, by decide⟩
   have h395 : ram 0x28b#16 = 0x6c#8 := hc ⟨395, by decide⟩
-  iterate 10
-    rw [evalLoop.eq_def]
-    simp [uxn_state, Uxn.Host.step]
-    conv =>
-      pattern Uxn.step _
-      simp only [machine, Uxn.step, stepM, fetchInstruction, fetchByte,
-        StateT.run, Bind.bind, StateT.bind, modifyGet, MonadStateOf.modifyGet,
-        StateT.modifyGet, Pure.pure, StateT.pure]
-      simp [h54, h55, h56, h69, h70, h71, h72, h73, h74, h75, h76, h77, h78, h79, h80, h81, h82, h83, h392, h393, h394, h395, Function.update_apply]
-      dsimp [Uxn.Instruction.ofByte]
-      simp [uxn_state, uxn_step, h54, h55, h56, h69, h70, h71, h72, h73, h74, h75, h76, h77, h78, h79, h80, h81, h82, h83, h392, h393, h394, h395, Function.update_apply]
-    try dsimp [Request.Result]
-    simp [respond, uxn_state]
-    try rw [deo_vector]
-    try simp [uxn_state, read_eq, Host.State.write, Patch.apply,
-      Function.update_apply, BitVec.sub_eq_add_neg, BitVec.add_assoc, Vector.getElem_set]
-  refine ⟨_, _, rfl, ?_⟩
-  simp [read_eq, Vector.getElem_set]
+  host_steps 10 [h54, h55, h56, h69, h70, h71, h72, h73, h74, h75, h76, h77, h78, h79, h80, h81, h82, h83, h392, h393, h394, h395, Function.update_apply]
+  refine ⟨_, .refl _, ?_⟩
+  simp [host_read, Vector.getElem_set]
 
-end ProgramProofs.Uxnmin
+end ProgramProofs.Uxnmin.Model

@@ -2,48 +2,59 @@ import Uxn.Host
 import ProgramProofs.Uxnmin.Rom
 import Mathlib.Logic.Relation
 
-namespace ProgramProofs.Uxnmin.Semantics
+/-! Internal definitions used by the block proofs. `Correctness.lean` presents
+the same contract together with the public refinement theorem. -/
+
+namespace ProgramProofs.Uxnmin.Model
 open Uxn Uxn.Host
 
-abbrev Configuration := EST.Out IO.Error IO.RealWorld (Outcome × Uxn.Host.State)
+/-- A configuration is a machine state and an IO state. -/
+inductive Configuration where
+  | starting (boot : IO Uxn.Host.State) (world : Void IO.RealWorld)
+  | running (state : Uxn.Host.State) (world : Void IO.RealWorld)
+  | failed (error : IO.Error) (world : Void IO.RealWorld)
 
--- For simulation purposes, our label is the state of the IO world.
-def label : Configuration → EST.Out IO.Error IO.RealWorld Unit
-  | .ok _ world => .ok () world
-  | .error error world => .error error world
+def Configuration.ofResult : EST.Out IO.Error IO.RealWorld Uxn.Host.State → Configuration
+  | .ok state world => .running state world
+  | .error error world => .failed error world
 
-def next : Configuration → Option Configuration
-  | .ok (.next vm, host) world => some (Uxn.Host.step vm host world)
-  | .ok (.brk _, _) _ | .error _ _ => none
+/-- Apply an actual initialization action or `State.next` to its IO world. -/
+def Configuration.next : Configuration → Option Configuration
+  | .starting boot world => some (.ofResult (boot world))
+  | .running state world => state.next.map (fun action => .ofResult (action world))
+  | .failed _ _ => none
 
--- Reachability by finitely many steps.
-def Reachable (start state : Configuration) : Prop :=
-  Relation.ReflTransGen (fun a b => next a = some b) start state
+/-- The IO world and exit status are observable from the refinement POV. -/
+def label : Configuration → EST.Out IO.Error IO.RealWorld (Option UInt32)
+  | .starting _ world => .ok none world
+  | .running state world => .ok (if state.next.isNone then some state.exitCode else none) world
+  | .failed error world => .error error world
 
--- Replace a Configuration's VM's RAM at addresses ≥ cutoff.
-def replaceOutside (cutoff : Nat) (replacement : Word → Byte) : Configuration → Configuration
-  | .ok (.next vm, host) world => .ok (.next (replace vm), host) world
-  | .ok (.brk vm, host) world => .ok (.brk (replace vm), host) world
-  | .error error world => .error error world
-where
-  replace (vm : Uxn.State) : Uxn.State :=
-    { vm with mem.ram := fun address =>
-        if address.toNat < cutoff then vm.mem.ram address else replacement address }
+def Reachable (start finish : Configuration) : Prop :=
+  Relation.ReflTransGen (fun a b => a.next = some b) start finish
 
--- At every reachable state, replacing outside RAM before an
--- instruction is the same as replacing it afterward. Hence outside RAM
--- neither effects execution nor is modified.
+/-- Change only RAM outside the range represented by the interpreter. -/
+def replaceOutside (ram : Word → Byte) : Configuration → Configuration
+  | .running state world => .running
+      { state with vm.mem.ram := fun address =>
+          if address.toNat < ramSize then state.vm.mem.ram address else ram address } world
+  | config => config
+
+/-- At every reachable loaded state, changing outside RAM before a host step
+has the same effect as changing it afterward, thus outside RAM neither affects
+execution nor is modified. -/
 def Confined (start : Configuration) : Prop :=
-  ∀ state, Reachable start state → ∀ ram,
-    next (replaceOutside ramSize ram state) = (next state).map (replaceOutside ramSize ram)
+  ∀ state world,
+    let current := Configuration.running state world
+    Reachable start current → ∀ ram,
+      (replaceOutside ram current).next = current.next.map (replaceOutside ram)
 
--- The reachable guest instructions use the device operations
--- supported by uxnmin.  File ports are excluded. Console input/type
--- cannot be written or read as the second byte of DEI2, and DEO2
--- cannot write its high byte to System/state.
+/-- Every reachable guest instruction uses device operations supported
+by uxnmin.tal. -/
 def CompatibleDevices (start : Configuration) : Prop :=
-  ∀ vm host world, Reachable start (.ok (.next vm, host) world) →
-    match Uxn.step vm with
+  ∀ state world after, Reachable start (.running state world) →
+    state.control = .evaluating after →
+    match Uxn.step state.vm with
     | .done _ => True
     | .request (.read8 port) _ _ => port ∉ Port.File.ports
     | .request (.read16 port) _ _ =>
@@ -56,4 +67,13 @@ def CompatibleDevices (start : Configuration) : Prop :=
         (∀ p ∈ [port, port + 1],
           p ∉ Port.File.ports ∧ p ∉ [Port.Console.read, Port.Console.type])
 
-end ProgramProofs.Uxnmin.Semantics
+/-- Both guest-loading paths succeed, initialize the same program, and leave
+the same IO world. The bounded File-device read must fit the interpreter's ROM
+capacity. -/
+def Loadable (filename : String) (world : Void IO.RealWorld) : Prop :=
+  match (do (← File.Handle.open filename).read (ramSize - 0x100).toUSize) world with
+  | .ok program after => program.size ≤ ramSize - 0x100 ∧
+      Uxn.Host.file filename [] world = .ok (initialState program) after
+  | .error _ _ => False
+
+end ProgramProofs.Uxnmin.Model
