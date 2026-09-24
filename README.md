@@ -36,6 +36,19 @@ This states, there exists a return code (`0`) and `final` VM state
 such that running the `.rom` file is equivalent to printing the
 triangle and returning those values.
 
+**The Self-Hosted Uxn VM Is Correct.**
+`ProgramProofs/Uxnmin/Correctness.lean` contains a proof that the
+self-hosted Uxn VM,
+[`uxnmin.tal`](https://wiki.xxiivv.com/etc/uxnmin.tal.txt), is
+correct. The proof shows that the self-hosted Uxn VM running in the
+Lean VM is a well-founded stuttering simulation (see page 39 of
+[Pete's
+dissertation](https://www.ccs.neu.edu/home/pete/pub/phd-dissertation.pdf)
+and `RankedSimulation`) of the Lean VM. Hence, any LTL\X (linear
+temporal logic formula not using the next operator) which holds for
+the Lean implementation of the VM also holds for the self-hosted VM
+(see Theorem 3, p. 38, and Theorem 4, p. 46, of Pete's dissertation).
+
 **Correctness.** These proofs are trustworthy if you trust the Lean
 kernel and the [implementation's](Uxn/) faithfullness to the Uxn
 specification. I have written some tests to compare behavior with
@@ -57,6 +70,3 @@ python3 tests/run.py --extended
 # eight parallel workers.
 python3 tests/run.py 1000 --jobs 8 --seed 0
 ```
-
-`ProgramProofs/` also contains a correctness proof for a Fibonacci and
-HelloWorld program.

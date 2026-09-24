@@ -7,15 +7,12 @@ uxnmin.tal is a well-founded stuttering simulation of uxn.
 namespace ProgramProofs.Uxnmin
 open Uxn Uxn.Host
 
-/-- A host state and IO world state. -/
+/-- A VM state and IO world state makes a configuration. -/
 abbrev Configuration := Model.Configuration
-
 abbrev Configuration.starting (boot : IO Uxn.Host.State) (world : Void IO.RealWorld) :
     Configuration := Model.Configuration.starting boot world
-
 abbrev Configuration.running (state : Uxn.Host.State) (world : Void IO.RealWorld) :
     Configuration := Model.Configuration.running state world
-
 abbrev Configuration.failed (error : IO.Error) (world : Void IO.RealWorld) :
     Configuration := Model.Configuration.failed error world
 
@@ -71,6 +68,7 @@ def CompatibleDevices (start : Configuration) : Prop :=
         (∀ p ∈ [port, port + 1],
           p ∉ Port.File.ports ∧ p ∉ [Port.Console.read, Port.Console.type])
 
+/-- The file in question can be loaded by Uxn. -/
 def Loadable (filename : String) (world : Void IO.RealWorld) : Prop :=
   match (do (← File.Handle.open filename).read (ramSize - 0x100).toUSize) world with
   | .ok program after => program.size ≤ ramSize - 0x100 ∧

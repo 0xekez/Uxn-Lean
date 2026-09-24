@@ -1,16 +1,11 @@
 import ProgramProofs.Host.Host
+import ProgramProofs.HelloWorld.Rom
 
 set_option maxHeartbeats 1000000
 
 namespace ProgramProofs.HelloWorld
 
 open Uxn Uxn.Host ProgramProofs.Host
-
-/-- The hello-world program with an arbitrary zero-terminated byte string. -/
-def rom (s : List Byte) : ByteArray :=
-  ⟨#[0xa0, 0x01, 0x12, 0x94, 0x06, 0x20, 0x00, 0x03,
-     0x02, 0x22, 0x00, 0x80, 0x18, 0x17, 0x21, 0x40,
-     0xff, 0xf1] ++ (s.map UInt8.ofBitVec).toArray ++ #[0]⟩
 
 /-- The ROM prints the provided string. -/
 theorem correct (s : List Byte)
@@ -23,15 +18,7 @@ theorem correct (s : List Byte)
       final.exitCode = 0 ∧ final.vm.pc = 0x10b ∧ final.vm.mem.wstk.ptr = 0 := by
   generalize hram : (initialState (rom s)).vm.mem.ram = ram
   have codeImage : Code (rom []) 18 ram := by
-    intro i
-    have hi := i.isLt
-    rw [← hram]
-    rw [initial_ram_byte _ _ (by simp [← ByteArray.size_data, rom] <;> omega) (by omega)]
-    unfold rom
-    rw [getElem!_pos _ _ (by simp <;> omega), getElem!_pos _ _ (by simp <;> omega)]
-    rw [Array.getElem_append_left (by simp <;> omega), Array.getElem_append_left (by exact hi)]
-    rw [Array.getElem_append_left (by simp)]
-    simp
+    simpa only [hram] using rom_code s
   have code (address : Word) (hlo : 0x100#16 ≤ address) (hhi : address < 0x112#16) :
       ram address = (rom []).data[address.toNat - 0x100]!.toBitVec :=
     codeImage.read address hlo hhi
@@ -46,14 +33,7 @@ theorem correct (s : List Byte)
     rw [Array.getElem_append_left (by simp <;> omega), Array.getElem_append_right (by simp)]
     simp
   have terminator : ram (0x112 + BitVec.ofNat 16 s.length) = 0 := by
-    have address : 0x112 + BitVec.ofNat 16 s.length =
-        0x100 + BitVec.ofNat 16 (18 + s.length) := by bv_omega
-    rw [← hram]
-    rw [address, initial_ram_byte _ _ (by simp [← ByteArray.size_data, rom] <;> omega) (by omega)]
-    unfold rom
-    rw [getElem!_pos _ _ (by simp <;> omega)]
-    rw [Array.getElem_append_right (by simp <;> omega)]
-    simp
+    simpa only [hram] using rom_terminator s hsize
 
   -- The return stack and RAM are unchanged. Only the two live pointer bytes
   -- are prescribed; arbitrary backing cells absorb the loop's discarded bytes.

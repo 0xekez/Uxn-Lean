@@ -1,5 +1,6 @@
 import ProgramProofs.Fibonacci
 import ProgramProofs.HelloWorld
+import ProgramProofs.HelloWorld.Refinement
 import ProgramProofs.Sierpinski
 import ProgramProofs.Uxnmin.Correctness
 import ProgramProofs.Uxnmin.RankedSimulation
@@ -9,6 +10,10 @@ import ProgramProofs.Uxnmin.RankedSimulation
 run_cmd do
   for name in [``ProgramProofs.Fibonacci.correct,
       ``ProgramProofs.HelloWorld.correct,
+      ``ProgramProofs.HelloWorld.refinement_conditions,
+      ``ProgramProofs.HelloWorld.refinement_conditions_file,
+      ``ProgramProofs.HelloWorld.refines,
+      ``ProgramProofs.HelloWorld.hello_world_refinement_conditions,
       ``ProgramProofs.Sierpinski.correct,
       ``ProgramProofs.RankedSimulation.preserves,
       ``ProgramProofs.Uxnmin.correct,
